@@ -114,21 +114,32 @@ class SSHGuardService:
                     
                     # Only analyze if we have enough events (lowered for testing)
                     if len(events) >= 3:
-                        # Run detection
-                        analysis = self.detector.analyze_ip(event.ip, events)
+                        self.logger.info(f"Analyzing {len(events)} events for IP {event.ip}")
                         
-                        if analysis['is_attack']:
-                            self.logger.warning(
-                                f"Attack detected from {analysis['ip']} "
-                                f"(score: {analysis['score']:.3f})"
-                            )
+                        # Run detection
+                        try:
+                            analysis = self.detector.analyze_ip(event.ip, events)
+                            self.logger.info(f"Analysis result: {analysis}")
                             
-                            # Block IP if firewall is enabled
-                            if self.firewall and not self.firewall.is_blocked(event.ip):
-                                self.firewall.block_ip(
-                                    event.ip,
-                                    f"Anomaly score: {analysis['score']:.3f}"
+                            if analysis['is_attack']:
+                                self.logger.warning(
+                                    f"Attack detected from {analysis['ip']} "
+                                    f"(score: {analysis['score']:.3f})"
                                 )
+                                
+                                # Block IP if firewall is enabled
+                                if self.firewall and not self.firewall.is_blocked(event.ip):
+                                    self.firewall.block_ip(
+                                        event.ip,
+                                        f"Anomaly score: {analysis['score']:.3f}"
+                                    )
+                                else:
+                                    self.logger.info(f"IP {event.ip} already blocked or firewall disabled")
+                            else:
+                                self.logger.info(f"No attack detected for {event.ip} (score: {analysis['score']:.3f}, threshold: {analysis['threshold']})")
+                        
+                        except Exception as e:
+                            self.logger.error(f"Error during analysis: {e}", exc_info=True)
                 
                 # Periodic cleanup of expired blocks
                 current_time = time.time()
