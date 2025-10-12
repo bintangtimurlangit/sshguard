@@ -61,26 +61,36 @@ class AnomalyDetector:
             Preprocessed numpy array ready for model input
         """
         if not events:
-            # Return zero-filled sequence if no events
-            return np.zeros((1, target_length, 3))
+            # Return zero-filled sequence if no events (6 features expected)
+            return np.zeros((1, target_length, 6))
         
         # Extract features from events
         features = []
-        for event in events:
-            # Features: [event_type, time_delta, username_entropy]
+        for i, event in enumerate(events):
+            # Features: [event_type, time_delta, username_length, hour_of_day, is_root, failed_count]
             event_type = self.EVENT_TYPE_MAP.get(event.event_type, 0)
             
             # Calculate time delta (seconds since last event)
-            if features:
-                prev_timestamp = events[len(features) - 1].timestamp
-                time_delta = event.timestamp - prev_timestamp
+            if i > 0:
+                time_delta = min(event.timestamp - events[i-1].timestamp, 3600)  # Cap at 1 hour
             else:
                 time_delta = 0
             
-            # Simple username entropy (length as proxy)
-            username_entropy = len(event.username) / 20.0  # Normalize
+            # Username length (normalized)
+            username_length = min(len(event.username), 20) / 20.0
             
-            features.append([event_type, time_delta, username_entropy])
+            # Hour of day (0-23, normalized to 0-1)
+            import datetime
+            hour_of_day = datetime.datetime.fromtimestamp(event.timestamp).hour / 23.0
+            
+            # Is root user (binary feature)
+            is_root = 1.0 if event.username == 'root' else 0.0
+            
+            # Count of failed attempts so far for this IP
+            failed_count = sum(1 for e in events[:i+1] if e.event_type in ['failed_auth', 'invalid_user'])
+            failed_count = min(failed_count, 100) / 100.0  # Normalize
+            
+            features.append([event_type, time_delta/3600.0, username_length, hour_of_day, is_root, failed_count])
         
         # Convert to numpy array
         features = np.array(features)
@@ -88,14 +98,14 @@ class AnomalyDetector:
         # Pad or truncate to target length
         if len(features) < target_length:
             # Pad with zeros
-            padding = np.zeros((target_length - len(features), 3))
+            padding = np.zeros((target_length - len(features), 6))
             features = np.vstack([padding, features])
         elif len(features) > target_length:
             # Take last target_length events
             features = features[-target_length:]
         
         # Reshape for model input (batch_size, timesteps, features)
-        return features.reshape(1, target_length, 3)
+        return features.reshape(1, target_length, 6)
     
     def predict(self, events: List[SSHEvent]) -> float:
         """Predict anomaly score for event sequence.
@@ -116,10 +126,17 @@ class AnomalyDetector:
         try:
             prediction = self.model.predict(X, verbose=0)
             score = float(prediction[0][0])
-            return score
+            return min(max(score, 0.0), 1.0)  # Clamp to [0,1]
         except Exception as e:
             self.logger.error(f"Prediction error: {e}")
-            return 0.0
+            # Fallback: simple heuristic based on failed attempts
+            failed_events = [e for e in events if e.event_type in ['failed_auth', 'invalid_user']]
+            if len(failed_events) >= 5:
+                return 0.9  # High suspicion for many failed attempts
+            elif len(failed_events) >= 3:
+                return 0.7  # Medium suspicion
+            else:
+                return 0.3  # Low suspicion
     
     def is_attack(self, events: List[SSHEvent]) -> tuple[bool, float]:
         """Determine if event sequence indicates an attack.
