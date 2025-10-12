@@ -158,7 +158,7 @@ class SSHGuardService:
                                 self.metrics['total_attacks_detected'] += 1
                                 
                                 self.logger.warning(
-                                    f"🚨 ATTACK DETECTED from {analysis['ip']} "
+                                    f"ATTACK DETECTED from {analysis['ip']} "
                                     f"(score: {analysis['score']:.3f}, events: {len(events)})"
                                 )
                                 
@@ -172,7 +172,7 @@ class SSHGuardService:
                                     
                                     # Log comprehensive block metrics
                                     self.logger.warning(
-                                        f"🛡️ IP BLOCKED: {event.ip} | "
+                                        f"IP BLOCKED: {event.ip} | "
                                         f"Score: {analysis['score']:.3f} | "
                                         f"Events: {len(events)} | "
                                         f"Failed: {analysis['event_types']['failed_auth']} | "
@@ -182,7 +182,7 @@ class SSHGuardService:
                                     self.logger.info(f"IP {event.ip} already blocked or firewall disabled")
                             else:
                                 self.logger.info(
-                                    f"✅ No attack detected for {event.ip} "
+                                    f"No attack detected for {event.ip} "
                                     f"(score: {analysis['score']:.3f}, threshold: {analysis['threshold']})"
                                 )
                             
@@ -240,7 +240,7 @@ class SSHGuardService:
         avg_recent_score = sum(recent_scores) / len(recent_scores) if recent_scores else 0
         
         self.logger.info(
-            f"📊 METRICS SUMMARY | "
+            f"METRICS SUMMARY | "
             f"Uptime: {uptime/60:.1f}min | "
             f"Events: {self.metrics['total_events_parsed']} ({events_per_min:.1f}/min) | "
             f"Analyses: {self.metrics['total_analyses_performed']} ({analyses_per_min:.1f}/min) | "
@@ -273,14 +273,14 @@ class SSHGuardService:
                 'min_score': min(all_scores)
             }
             
-            self.logger.info(f"🏁 FINAL METRICS: {json.dumps(stats, indent=2)}")
+            self.logger.info(f"FINAL METRICS: {json.dumps(stats, indent=2)}")
         
         # Save detailed metrics to file
         try:
             metrics_file = f"/tmp/sshguard_metrics_{int(time.time())}.json"
             with open(metrics_file, 'w') as f:
                 json.dump(self.metrics, f, indent=2, default=str)
-            self.logger.info(f"📁 Detailed metrics saved to: {metrics_file}")
+            self.logger.info(f"Detailed metrics saved to: {metrics_file}")
         except Exception as e:
             self.logger.error(f"Failed to save metrics: {e}")
 
