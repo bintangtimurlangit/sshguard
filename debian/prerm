@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "remove" ]; then
+    systemctl stop sshguard || true
+    systemctl disable sshguard || true
+fi
+
+#DEBHELPER#
+exit 0
+

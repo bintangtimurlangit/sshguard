@@ -1,0 +1,15 @@
+[Unit]
+Description=SSHGuard LSTM-based SSH Intrusion Detection
+After=network.target syslog.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m sshguard
+ExecStop=/usr/bin/sshguard-ctl stop
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target
+

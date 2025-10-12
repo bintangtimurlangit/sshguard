@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "configure" ]; then
+    systemctl daemon-reload
+    echo "SSHGuard installed. Enable with: systemctl enable sshguard"
+fi
+
+#DEBHELPER#
+exit 0
+
