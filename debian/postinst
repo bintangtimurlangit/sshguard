@@ -2,6 +2,12 @@
 set -e
 
 if [ "$1" = "configure" ]; then
+    # Install TensorFlow via pip if not already installed
+    if ! python3 -c "import tensorflow" 2>/dev/null; then
+        echo "Installing TensorFlow..."
+        pip3 install --break-system-packages tensorflow>=2.10.0
+    fi
+    
     systemctl daemon-reload
     echo "SSHGuard installed. Enable with: systemctl enable sshguard"
 fi
