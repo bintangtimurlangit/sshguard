@@ -23,22 +23,42 @@ class AnomalyDetector:
     SEQUENCE_LENGTH = 12  # 12 timesteps as per training
     FEATURE_COUNT = 6     # 6 features per timestep
     
-    def __init__(self, model_path: str, threshold: float = 0.8):
+    # Class mapping from Config C training
+    CLASS_NAMES = ['benign', 'fast_attack', 'slow_rate_attack']
+    ATTACK_CLASSES = [1, 2]  # fast_attack and slow_rate_attack indices
+    
+    def __init__(self, model_path: str, threshold: float = 0.5):
         """Initialize anomaly detector.
         
         Args:
             model_path: Path to trained LSTM model (.keras file)
-            threshold: Detection threshold (0-1)
+            threshold: Detection threshold (0-1) - probability threshold for attack classes
         """
         self.model_path = model_path
         self.threshold = threshold
         self.model = None
         self.logger = logging.getLogger(__name__)
         
-        # Feature normalization parameters (you may need to adjust these)
-        # These should match your training normalization
-        self.feature_mean = np.array([10.0, 1.0, 0.8, 30.0, 0.5, 1.0], dtype=np.float32)
-        self.feature_std = np.array([15.0, 1.0, 0.2, 50.0, 0.3, 1.5], dtype=np.float32)
+        # Exact normalization parameters from Config C training (mixed dataset)
+        # Feature order: total_events, unique_source_ips, majority_ratio, 
+        #                avg_interarrival_time, burstiness, event_entropy
+        self.feature_mean = np.array([
+            603.18432617,    # total_events
+            21.29883957,     # unique_source_ips
+            0.77969247,      # majority_ratio
+            8.67684555,      # avg_interarrival_time
+            2.41349888,      # burstiness
+            0.78907585,      # event_entropy
+        ], dtype=np.float32)
+        
+        self.feature_std = np.array([
+            1775.83642578,   # total_events
+            21.85165024,     # unique_source_ips
+            0.15343687,      # majority_ratio
+            27.78080368,     # avg_interarrival_time
+            1.47318995,      # burstiness
+            0.38233167,      # event_entropy
+        ], dtype=np.float32)
         
         if tf is None or keras is None:
             raise ImportError("TensorFlow is required for anomaly detection")
@@ -164,7 +184,7 @@ class AnomalyDetector:
             events: List of SSH events
             
         Returns:
-            Anomaly score (0-1, higher = more suspicious)
+            Anomaly score (0-1, higher = more suspicious) - combined probability of attack classes
         """
         if not events:
             return 0.0
@@ -184,13 +204,22 @@ class AnomalyDetector:
             # Normalize
             sequence_normalized = self.normalize_features(sequence)
             
-            # Run inference
+            # Run inference - model outputs probabilities for 3 classes: [benign, fast_attack, slow_rate_attack]
             prediction = self.model.predict(sequence_normalized, verbose=0)
-            score = float(prediction[0][0])
-            return min(max(score, 0.0), 1.0)  # Clamp to [0,1]
+            
+            # Extract probabilities
+            probs = prediction[0]  # Shape: (3,)
+            
+            # Calculate attack score: sum of fast_attack + slow_rate_attack probabilities
+            attack_score = float(probs[1] + probs[2])  # indices 1 and 2 are attack classes
+            
+            # Log detailed prediction for debugging
+            self.logger.debug(f"Class probabilities - Benign: {probs[0]:.3f}, Fast: {probs[1]:.3f}, Slow: {probs[2]:.3f}")
+            
+            return min(max(attack_score, 0.0), 1.0)  # Clamp to [0,1]
             
         except Exception as e:
-            self.logger.error(f"Prediction error: {e}")
+            self.logger.error(f"Prediction error: {e}", exc_info=True)
             # Fallback: simple heuristic based on failed attempts
             failed_events = [e for e in events if e.event_type in ['failed_auth', 'invalid_user']]
             if len(failed_events) >= 5:
