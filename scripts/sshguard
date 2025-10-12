@@ -77,6 +77,7 @@ def list_blocked_ips():
 def unblock_ip(ip):
     """Unblock an IP address."""
     try:
+        # First, try the simple method
         result = subprocess.run(
             ['iptables', '-D', 'SSHGUARD', '-s', ip, '-j', 'DROP'],
             capture_output=True,
@@ -85,8 +86,45 @@ def unblock_ip(ip):
         
         if result.returncode == 0:
             print(f"Successfully unblocked {ip}")
-        else:
-            print(f"Failed to unblock {ip} (may not be blocked)")
+            return
+        
+        # If that fails, try with comment (the way SSHGuard creates rules)
+        result = subprocess.run(
+            ['iptables', '-D', 'SSHGUARD', '-s', ip, '-j', 'DROP', '-m', 'comment', '--comment'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print(f"Successfully unblocked {ip}")
+            return
+        
+        # If both fail, try finding and removing by line number
+        # Get the line number of the rule
+        list_result = subprocess.run(
+            ['iptables', '-L', 'SSHGUARD', '-n', '--line-numbers'],
+            capture_output=True,
+            text=True
+        )
+        
+        if list_result.returncode == 0:
+            lines = list_result.stdout.strip().split('\n')
+            for line in lines[2:]:  # Skip header lines
+                if ip in line and 'DROP' in line:
+                    # Extract line number (first column)
+                    line_num = line.split()[0]
+                    if line_num.isdigit():
+                        # Remove by line number
+                        remove_result = subprocess.run(
+                            ['iptables', '-D', 'SSHGUARD', line_num],
+                            capture_output=True,
+                            text=True
+                        )
+                        if remove_result.returncode == 0:
+                            print(f"Successfully unblocked {ip} (removed rule #{line_num})")
+                            return
+        
+        print(f"Failed to unblock {ip} (may not be blocked or rule format mismatch)")
     
     except FileNotFoundError:
         print("Error: iptables not found")
