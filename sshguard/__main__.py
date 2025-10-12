@@ -104,7 +104,7 @@ class SSHGuardService:
                 event = self.monitor.parse_line(line)
                 
                 if event:
-                    self.logger.debug(f"Parsed event: {event}")
+                    self.logger.info(f"Parsed SSH event: {event}")
                     
                     # Add event to IP window
                     self.monitor.add_event(event)
@@ -112,8 +112,8 @@ class SSHGuardService:
                     # Get event sequence for this IP
                     events = self.monitor.get_event_sequence(event.ip)
                     
-                    # Only analyze if we have enough events
-                    if len(events) >= 10:
+                    # Only analyze if we have enough events (lowered for testing)
+                    if len(events) >= 3:
                         # Run detection
                         analysis = self.detector.analyze_ip(event.ip, events)
                         

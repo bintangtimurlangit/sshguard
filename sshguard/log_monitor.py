@@ -42,8 +42,11 @@ class LogMonitor:
     INVALID_USER = re.compile(
         r'Invalid user (\S+) from (\d+\.\d+\.\d+\.\d+)'
     )
+    AUTH_FAILURE = re.compile(
+        r'authentication failure.*rhost=(\d+\.\d+\.\d+\.\d+).*user=(\S+)'
+    )
     TIMESTAMP = re.compile(
-        r'^(\w+\s+\d+\s+\d+:\d+:\d+)'
+        r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}|\w+\s+\d+\s+\d+:\d+:\d+)'
     )
     
     def __init__(self, log_file: str, window_size: int = 100):
@@ -91,6 +94,12 @@ class LogMonitor:
         if match:
             username, ip = match.groups()
             return SSHEvent(timestamp, ip, username, 'invalid_user')
+        
+        # Check for authentication failure (pam_unix format)
+        match = self.AUTH_FAILURE.search(line)
+        if match:
+            ip, username = match.groups()
+            return SSHEvent(timestamp, ip, username, 'failed_auth')
         
         return None
     
