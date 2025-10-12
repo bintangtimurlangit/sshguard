@@ -41,13 +41,18 @@ Configuration file: `/etc/sshguard/sshguard.conf`
 
 ```bash
 # Check status
-sudo sshguard-ctl status
+sudo sshguard status
 
 # View blocked IPs
-sudo sshguard-ctl list
+sudo sshguard list
 
 # Unblock an IP
-sudo sshguard-ctl unblock <ip>
+sudo sshguard unblock <ip>
+
+# Start/stop service
+sudo sshguard start
+sudo sshguard stop
+sudo sshguard restart
 ```
 
 ## Requirements

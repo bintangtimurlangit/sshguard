@@ -1,0 +1,10 @@
+sshguard (1.0.0) unstable; urgency=low
+
+  * Initial release
+  * LSTM-based SSH intrusion detection
+  * Real-time log monitoring
+  * Automatic IP blocking via iptables
+  * Slow-rate attack detection
+
+ -- SSHGuard Team <team@sshguard.local>  Sun, 12 Oct 2025 23:00:00 +0000
+

@@ -5,7 +5,7 @@ After=network.target syslog.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 -m sshguard
-ExecStop=/usr/bin/sshguard-ctl stop
+ExecStop=/usr/bin/sshguard stop
 Restart=on-failure
 RestartSec=10
 User=root

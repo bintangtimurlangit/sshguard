@@ -1,5 +1,4 @@
 config/sshguard.conf etc/sshguard/
 models/lstm-ids.keras usr/lib/sshguard/models/
 systemd/sshguard.service lib/systemd/system/
-scripts/sshguard-ctl usr/bin/
 

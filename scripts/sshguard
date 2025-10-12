@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""SSHGuard control script - CLI for managing SSHGuard service."""
+
+import sys
+import argparse
+import json
+import subprocess
+from pathlib import Path
+
+
+def get_service_status():
+    """Get SSHGuard service status."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', 'sshguard'],
+            capture_output=True,
+            text=True
+        )
+        active = result.stdout.strip() == 'active'
+        
+        result = subprocess.run(
+            ['systemctl', 'is-enabled', 'sshguard'],
+            capture_output=True,
+            text=True
+        )
+        enabled = result.stdout.strip() == 'enabled'
+        
+        return {
+            'active': active,
+            'enabled': enabled
+        }
+    except FileNotFoundError:
+        return {'active': False, 'enabled': False, 'error': 'systemctl not found'}
+
+
+def list_blocked_ips():
+    """List currently blocked IPs from iptables."""
+    try:
+        result = subprocess.run(
+            ['iptables', '-L', 'SSHGUARD', '-n', '-v'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print("No blocked IPs (SSHGUARD chain not found)")
+            return
+        
+        lines = result.stdout.strip().split('\n')
+        
+        # Skip header lines
+        blocked_ips = []
+        for line in lines[2:]:
+            parts = line.split()
+            if len(parts) >= 8 and parts[7] != '0.0.0.0/0':
+                blocked_ips.append({
+                    'ip': parts[7],
+                    'packets': parts[0],
+                    'bytes': parts[1]
+                })
+        
+        if blocked_ips:
+            print(f"Currently blocked IPs: {len(blocked_ips)}")
+            print(f"{'IP Address':<20} {'Packets':<10} {'Bytes'}")
+            print("-" * 45)
+            for item in blocked_ips:
+                print(f"{item['ip']:<20} {item['packets']:<10} {item['bytes']}")
+        else:
+            print("No IPs currently blocked")
+    
+    except FileNotFoundError:
+        print("Error: iptables not found")
+    except Exception as e:
+        print(f"Error listing blocked IPs: {e}")
+
+
+def unblock_ip(ip):
+    """Unblock an IP address."""
+    try:
+        result = subprocess.run(
+            ['iptables', '-D', 'SSHGUARD', '-s', ip, '-j', 'DROP'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print(f"Successfully unblocked {ip}")
+        else:
+            print(f"Failed to unblock {ip} (may not be blocked)")
+    
+    except FileNotFoundError:
+        print("Error: iptables not found")
+    except Exception as e:
+        print(f"Error unblocking IP: {e}")
+
+
+def show_stats():
+    """Show SSHGuard statistics."""
+    status = get_service_status()
+    
+    print("SSHGuard Status")
+    print("=" * 50)
+    print(f"Service Active:  {status.get('active', 'Unknown')}")
+    print(f"Service Enabled: {status.get('enabled', 'Unknown')}")
+    print()
+    
+    # Get blocked IPs count
+    try:
+        result = subprocess.run(
+            ['iptables', '-L', 'SSHGUARD', '-n', '--line-numbers'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            blocked_count = len([l for l in lines[2:] if l.strip()])
+            print(f"Blocked IPs: {blocked_count}")
+        else:
+            print("Blocked IPs: 0 (chain not found)")
+    except:
+        print("Blocked IPs: Unknown")
+    
+    # Check log file
+    log_file = Path('/var/log/sshguard.log')
+    if log_file.exists():
+        print(f"Log file: {log_file} ({log_file.stat().st_size} bytes)")
+    else:
+        print("Log file: Not found")
+
+
+def start_service():
+    """Start SSHGuard service."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'start', 'sshguard'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("SSHGuard service started")
+        else:
+            print(f"Failed to start service: {result.stderr}")
+    except FileNotFoundError:
+        print("Error: systemctl not found")
+
+
+def stop_service():
+    """Stop SSHGuard service."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'stop', 'sshguard'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("SSHGuard service stopped")
+        else:
+            print(f"Failed to stop service: {result.stderr}")
+    except FileNotFoundError:
+        print("Error: systemctl not found")
+
+
+def restart_service():
+    """Restart SSHGuard service."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'restart', 'sshguard'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("SSHGuard service restarted")
+        else:
+            print(f"Failed to restart service: {result.stderr}")
+    except FileNotFoundError:
+        print("Error: systemctl not found")
+
+
+def main():
+    """Main CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description='SSHGuard - LSTM-based SSH intrusion detection system',
+        prog='sshguard'
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    
+    # status command
+    subparsers.add_parser('status', help='Show service status and statistics')
+    
+    # list command
+    subparsers.add_parser('list', help='List currently blocked IPs')
+    
+    # unblock command
+    unblock_parser = subparsers.add_parser('unblock', help='Unblock an IP address')
+    unblock_parser.add_argument('ip', help='IP address to unblock')
+    
+    # start command
+    subparsers.add_parser('start', help='Start SSHGuard service')
+    
+    # stop command
+    subparsers.add_parser('stop', help='Stop SSHGuard service')
+    
+    # restart command
+    subparsers.add_parser('restart', help='Restart SSHGuard service')
+    
+    args = parser.parse_args()
+    
+    # Check if running as root for certain commands
+    if args.command in ['unblock', 'start', 'stop', 'restart']:
+        import os
+        if os.geteuid() != 0:
+            print("Error: This command requires root privileges", file=sys.stderr)
+            sys.exit(1)
+    
+    # Execute command
+    if args.command == 'status':
+        show_stats()
+    elif args.command == 'list':
+        list_blocked_ips()
+    elif args.command == 'unblock':
+        unblock_ip(args.ip)
+    elif args.command == 'start':
+        start_service()
+    elif args.command == 'stop':
+        stop_service()
+    elif args.command == 'restart':
+        restart_service()
+    else:
+        parser.print_help()
+
+
+if __name__ == '__main__':
+    main()
+
