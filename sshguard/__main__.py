@@ -53,7 +53,8 @@ class SSHGuardService:
                 sequence_horizon_seconds=self.config.get_int('general', 'sequence_horizon_seconds', 60),
                 bucket_count=self.config.get_int('general', 'bucket_count', 12),
                 fast_threshold=self.config.get_float('general', 'fast_threshold', None),
-                slow_threshold=self.config.get_float('general', 'slow_threshold', None)
+                slow_threshold=self.config.get_float('general', 'slow_threshold', None),
+                min_class_confidence=self.config.get_float('general', 'min_class_confidence', 0.5)
             )
             
             if self.config.get_bool('firewall', 'enabled', True):

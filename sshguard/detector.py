@@ -25,7 +25,8 @@ class AnomalyDetector:
                  sequence_horizon_seconds: int = 60,
                  bucket_count: int = 12,
                  fast_threshold: float | None = None,
-                 slow_threshold: float | None = None):
+                 slow_threshold: float | None = None,
+                 min_class_confidence: float = 0.5):
         """Initialize anomaly detector.
         
         Args:
@@ -39,9 +40,11 @@ class AnomalyDetector:
         # Inference knobs
         self.sequence_horizon_seconds = max(6, int(sequence_horizon_seconds))
         self.bucket_count = max(1, int(bucket_count))
-        # Optional per-class thresholds (if set, override combined threshold decision)
+        # Optional per-class thresholds (legacy/auxiliary)
         self.fast_threshold = fast_threshold
         self.slow_threshold = slow_threshold
+        # Argmax-based decision confidence
+        self.min_class_confidence = float(min_class_confidence)
         
         # Exact normalization parameters from Config C training (mixed dataset)
         # Feature order: total_events, unique_source_ips, majority_ratio, 
@@ -330,14 +333,11 @@ class AnomalyDetector:
             score = self.predict(events)
             probs = np.array([1.0 - score, score * 0.6, score * 0.4], dtype=np.float32)
         # Decision rule: per-class thresholds if provided, otherwise combined
-        # Decision: combined OR per-class (if provided)
-        is_attack = (score >= self.threshold)
-        if self.fast_threshold is not None:
-            is_attack = is_attack or (probs[1] >= self.fast_threshold)
-        if self.slow_threshold is not None:
-            is_attack = is_attack or (probs[2] >= self.slow_threshold)
         predicted_class_idx = int(np.argmax(probs))
         predicted_class = self.CLASS_NAMES[predicted_class_idx]
+        # Argmax-based decision: require class confidence
+        is_attack = (predicted_class in ('fast_attack', 'slow_rate_attack') and
+                     float(probs[predicted_class_idx]) >= self.min_class_confidence)
         
         # Count event types
         event_counts = {
