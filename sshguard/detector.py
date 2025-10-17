@@ -1,5 +1,3 @@
-"""LSTM-based detection engine."""
-
 import numpy as np
 import math
 from typing import List, Dict
@@ -17,15 +15,11 @@ from .log_monitor import SSHEvent
 
 
 class AnomalyDetector:
-    """LSTM-based anomaly detection for SSH authentication patterns."""
+    SEQUENCE_LENGTH = 12
+    FEATURE_COUNT = 6
     
-    # Model configuration
-    SEQUENCE_LENGTH = 12  # 12 timesteps as per training
-    FEATURE_COUNT = 6     # 6 features per timestep
-    
-    # Class mapping from Config C training
     CLASS_NAMES = ['benign', 'fast_attack', 'slow_rate_attack']
-    ATTACK_CLASSES = [1, 2]  # fast_attack and slow_rate_attack indices
+    ATTACK_CLASSES = [1, 2]
     
     def __init__(self, model_path: str, threshold: float = 0.5):
         """Initialize anomaly detector.

@@ -1,5 +1,3 @@
-"""SSH log streaming and parsing module."""
-
 import re
 import time
 import subprocess
@@ -7,10 +5,7 @@ from typing import Optional, Dict, List
 from collections import defaultdict, deque
 from datetime import datetime
 
-
 class SSHEvent:
-    """Represents a single SSH authentication event."""
-    
     def __init__(self, timestamp: float, ip: str, username: str, event_type: str):
         """Initialize SSH event.
         
@@ -27,7 +22,6 @@ class SSHEvent:
     
     def __repr__(self):
         return f"SSHEvent({self.ip}, {self.username}, {self.event_type})"
-
 
 class LogMonitor:
     """Monitor and parse SSH authentication logs."""
@@ -172,10 +166,5 @@ class LogMonitor:
             self.tail_process.wait(timeout=5)
     
     def get_active_ips(self) -> List[str]:
-        """Get list of IPs with events in window.
-        
-        Returns:
-            List of IP addresses
-        """
         return list(self.ip_windows.keys())
 

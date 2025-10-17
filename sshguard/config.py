@@ -1,5 +1,3 @@
-"""Configuration handler for SSHGuard."""
-
 import configparser
 import os
 from typing import Any, Optional

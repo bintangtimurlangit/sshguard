@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 
 
 class FirewallManager:
-    """Manage iptables rules for blocking IP addresses."""
-    
     def __init__(self, chain_name: str = 'SSHGUARD', block_duration: int = 3600):
         """Initialize firewall manager.
         
