@@ -138,7 +138,15 @@ class SSHGuardService:
                             analysis_time = time.time() - analysis_start
                             
                             # Enhanced logging with metrics
-                            self.logger.info(f"Analysis result: {analysis}")
+                            self.logger.info(
+                                f"Analysis result: ip={analysis['ip']} "
+                                f"class={analysis.get('predicted_class','-')} "
+                                f"score={analysis['score']:.3f} "
+                                f"benign={analysis.get('class_probs',{}).get('benign',0):.3f} "
+                                f"fast={analysis.get('class_probs',{}).get('fast_attack',0):.3f} "
+                                f"slow={analysis.get('class_probs',{}).get('slow_rate_attack',0):.3f} "
+                                f"events={analysis['event_count']}"
+                            )
                             self.logger.info(f"Analysis took {analysis_time:.3f}s")
                             
                             # Record detection metrics
