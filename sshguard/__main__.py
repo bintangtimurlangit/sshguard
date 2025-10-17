@@ -49,7 +49,11 @@ class SSHGuardService:
             
             self.detector = AnomalyDetector(
                 model_path=self.config.get('general', 'model_path'),
-                threshold=self.config.get_float('general', 'detection_threshold', 0.8)
+                threshold=self.config.get_float('general', 'detection_threshold', 0.8),
+                sequence_horizon_seconds=self.config.get_int('general', 'sequence_horizon_seconds', 60),
+                bucket_count=self.config.get_int('general', 'bucket_count', 12),
+                fast_threshold=self.config.get_float('general', 'fast_threshold', None),
+                slow_threshold=self.config.get_float('general', 'slow_threshold', None)
             )
             
             if self.config.get_bool('firewall', 'enabled', True):

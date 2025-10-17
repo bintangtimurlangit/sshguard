@@ -21,7 +21,11 @@ class AnomalyDetector:
     CLASS_NAMES = ['benign', 'fast_attack', 'slow_rate_attack']
     ATTACK_CLASSES = [1, 2]
     
-    def __init__(self, model_path: str, threshold: float = 0.5):
+    def __init__(self, model_path: str, threshold: float = 0.5,
+                 sequence_horizon_seconds: int = 60,
+                 bucket_count: int = 12,
+                 fast_threshold: float | None = None,
+                 slow_threshold: float | None = None):
         """Initialize anomaly detector.
         
         Args:
@@ -32,6 +36,12 @@ class AnomalyDetector:
         self.threshold = threshold
         self.model = None
         self.logger = logging.getLogger(__name__)
+        # Inference knobs
+        self.sequence_horizon_seconds = max(6, int(sequence_horizon_seconds))
+        self.bucket_count = max(1, int(bucket_count))
+        # Optional per-class thresholds (if set, override combined threshold decision)
+        self.fast_threshold = fast_threshold
+        self.slow_threshold = slow_threshold
         
         # Exact normalization parameters from Config C training (mixed dataset)
         # Feature order: total_events, unique_source_ips, majority_ratio, 
@@ -141,7 +151,8 @@ class AnomalyDetector:
             event_entropy
         ], dtype=np.float32)
 
-    def _build_time_bucket_sequence(self, events: List[SSHEvent], total_horizon_seconds: int = 60) -> np.ndarray:
+    def _build_time_bucket_sequence(self, events: List[SSHEvent], total_horizon_seconds: int | None = None,
+                                    bucket_count: int | None = None) -> np.ndarray:
         """Build a (12,6) sequence using fixed time buckets over the last horizon.
 
         The horizon is split into 12 equal buckets. For each bucket we compute the
@@ -154,22 +165,34 @@ class AnomalyDetector:
         Returns:
             ndarray of shape (12, 6)
         """
+        if total_horizon_seconds is None:
+            total_horizon_seconds = self.sequence_horizon_seconds
+        if bucket_count is None:
+            bucket_count = self.bucket_count
         if not events:
-            return np.zeros((self.SEQUENCE_LENGTH, self.FEATURE_COUNT), dtype=np.float32)
+            # Return zeros with desired bucket_count; caller will adapt to 12
+            return np.zeros((bucket_count, self.FEATURE_COUNT), dtype=np.float32)
 
         latest_ts = max(e.timestamp for e in events)
-        bucket_len = max(1, total_horizon_seconds // self.SEQUENCE_LENGTH)
+        bucket_len = max(1, total_horizon_seconds // bucket_count)
         horizon_start = latest_ts - total_horizon_seconds
         sequence_rows: List[np.ndarray] = []
 
-        for i in range(self.SEQUENCE_LENGTH):
+        for i in range(bucket_count):
             start_ts = horizon_start + i * bucket_len
             end_ts = start_ts + bucket_len
             bucket_events = [e for e in events if (e.timestamp >= start_ts and e.timestamp < end_ts)]
             features = self.calculate_features(bucket_events)
             sequence_rows.append(features)
 
-        return np.stack(sequence_rows, axis=0)
+        seq = np.stack(sequence_rows, axis=0)
+        # Adapt to model-required 12 timesteps (pad or take last 12)
+        if seq.shape[0] < self.SEQUENCE_LENGTH:
+            pad_rows = np.zeros((self.SEQUENCE_LENGTH - seq.shape[0], self.FEATURE_COUNT), dtype=np.float32)
+            seq = np.vstack([pad_rows, seq])
+        elif seq.shape[0] > self.SEQUENCE_LENGTH:
+            seq = seq[-self.SEQUENCE_LENGTH:]
+        return seq
     
     def prepare_model_input(self, feature_windows: List[np.ndarray]) -> np.ndarray:
         """Prepare 12-timestep sequence for model input."""
@@ -214,8 +237,8 @@ class AnomalyDetector:
             return 0.0
         
         try:
-            # Build a true time-bucketed sequence over the last 60 seconds
-            seq_12x6 = self._build_time_bucket_sequence(events, total_horizon_seconds=60)
+            # Build a true time-bucketed sequence using configured horizon/buckets
+            seq_12x6 = self._build_time_bucket_sequence(events)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             
@@ -264,7 +287,7 @@ class AnomalyDetector:
         """
         # Compute probabilities and class using time-bucketed sequence
         try:
-            seq_12x6 = self._build_time_bucket_sequence(events, total_horizon_seconds=60)
+            seq_12x6 = self._build_time_bucket_sequence(events)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             sequence_normalized = self.normalize_features(sequence)
@@ -275,8 +298,13 @@ class AnomalyDetector:
             # Fallback to simple predict
             score = self.predict(events)
             probs = np.array([1.0 - score, score * 0.6, score * 0.4], dtype=np.float32)
-
-        is_attack = score >= self.threshold
+        # Decision rule: per-class thresholds if provided, otherwise combined
+        if self.fast_threshold is not None or self.slow_threshold is not None:
+            fast_ok = probs[1] >= (self.fast_threshold if self.fast_threshold is not None else self.threshold)
+            slow_ok = probs[2] >= (self.slow_threshold if self.slow_threshold is not None else self.threshold)
+            is_attack = bool(fast_ok or slow_ok)
+        else:
+            is_attack = score >= self.threshold
         predicted_class_idx = int(np.argmax(probs))
         predicted_class = self.CLASS_NAMES[predicted_class_idx]
         
