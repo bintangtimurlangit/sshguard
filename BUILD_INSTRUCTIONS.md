@@ -22,8 +22,15 @@ dpkg-buildpackage -us -uc -b
 
 3. Install the generated .deb package:
 ```bash
-sudo dpkg -i ../sshguard_1.0.0_all.deb
-sudo apt-get install -f  # Install dependencies if needed
+# Preferred (resolves dependencies automatically)
+sudo apt-get update
+sudo apt-get install -y ../sshguard_1.0.0_all.deb
+
+# If you already used dpkg -i and hit dependency errors
+# (e.g., python3-numpy or python3-pip missing), run either:
+sudo apt-get install -y python3-numpy python3-pip
+# or let apt fix them for you:
+sudo apt-get -f install -y
 ```
 
 ## Installing from Source
@@ -53,6 +60,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable sshguard
 sudo systemctl start sshguard
 ```
+
+## Troubleshooting
+
+- Missing python dependencies after dpkg install:
+  ```bash
+  sudo apt-get install -y python3-numpy python3-pip
+  sudo apt-get -f install -y
+  ```
+- Verify service status and logs:
+  ```bash
+  systemctl status sshguard --no-pager
+  journalctl -u sshguard -e
+  ```
+- Allow iptables operations (run as root/sudo). On systems using `nftables`, ensure the compatibility layer is present.
 
 ## Configuration
 

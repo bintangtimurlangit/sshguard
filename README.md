@@ -15,19 +15,58 @@ SSHGuard monitors SSH authentication logs in real-time using a Bi-LSTM neural ne
 
 ## Installation
 
-### From .deb Package
+### Method 1 — Build and install .deb (recommended)
 
+1) Clone repository
 ```bash
-sudo dpkg -i sshguard_*.deb
+git clone https://github.com/bintangtimurlangit/sshguard.git
+cd sshguard
+```
+
+2) Install build dependencies
+```bash
+sudo apt-get update
+sudo apt-get install -y debhelper dh-python python3-all python3-setuptools python3-pip python3-numpy iptables
+```
+
+3) Build package
+```bash
+dpkg-buildpackage -us -uc -b
+```
+
+4) Install package and enable service
+```bash
+cd ..
+sudo dpkg -i sshguard_1.0.0_all.deb
+sudo systemctl daemon-reload
 sudo systemctl enable sshguard
 sudo systemctl start sshguard
 ```
 
-### From Source
+### Method 2 — Install from source
 
+1) Clone
 ```bash
-python3 setup.py install
+git clone https://github.com/bintangtimurlangit/sshguard.git
+cd sshguard
+```
+
+2) System dependencies and TensorFlow
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-pip python3-numpy iptables
+sudo pip3 install --break-system-packages tensorflow>=2.10.0
+```
+
+3) Install and register service
+```bash
+sudo python3 setup.py install
 sudo cp systemd/sshguard.service /lib/systemd/system/
+sudo mkdir -p /usr/lib/sshguard/models /etc/sshguard
+sudo cp models/lstm-ids.keras /usr/lib/sshguard/models/
+sudo cp config/sshguard.conf /etc/sshguard/
+sudo cp scripts/sshguard /usr/bin/
+sudo chmod +x /usr/bin/sshguard
 sudo systemctl daemon-reload
 sudo systemctl enable sshguard
 sudo systemctl start sshguard
@@ -55,10 +94,24 @@ sudo sshguard stop
 sudo sshguard restart
 ```
 
+## Monitoring
+
+```bash
+# Follow SSHGuard logs
+sudo tail -f /var/log/sshguard.log
+
+# Stream systemd logs
+sudo journalctl -u sshguard -f
+
+# Watch blocked IPs
+watch -n 2 'sudo sshguard list'
+```
+
 ## Requirements
 
 - Python 3.8+
 - TensorFlow 2.x
+- Runtime packages on Debian/Ubuntu: python3, python3-numpy, python3-pip
 - Root/sudo privileges for iptables management
 - Systemd-based Linux distribution
 
