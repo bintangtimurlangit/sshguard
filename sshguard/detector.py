@@ -193,6 +193,49 @@ class AnomalyDetector:
         elif seq.shape[0] > self.SEQUENCE_LENGTH:
             seq = seq[-self.SEQUENCE_LENGTH:]
         return seq
+
+    def _build_event_bucket_sequence(self, events: List[SSHEvent], events_per_bucket: int = 5,
+                                     bucket_count: int | None = None) -> np.ndarray:
+        """Build a (12,6) sequence using fixed number of events per bucket.
+
+        Takes the last (bucket_count * events_per_bucket) events for the IP,
+        splits them into contiguous buckets (oldest to newest), and computes
+        features per bucket.
+        """
+        if bucket_count is None:
+            bucket_count = self.bucket_count
+        if events_per_bucket <= 0:
+            events_per_bucket = 5
+        if not events:
+            return np.zeros((self.SEQUENCE_LENGTH, self.FEATURE_COUNT), dtype=np.float32)
+
+        # Take only the last N events to form buckets
+        needed = bucket_count * events_per_bucket
+        slice_events = events[-needed:]
+        # If fewer events than needed, left-pad with empty buckets later
+        buckets: List[np.ndarray] = []
+
+        # If not enough events to fill one bucket, return zeros padded except last bucket with whatever exists
+        if len(slice_events) < events_per_bucket:
+            feat = self.calculate_features(slice_events)
+            seq = [np.zeros(self.FEATURE_COUNT, dtype=np.float32)] * (self.SEQUENCE_LENGTH - 1) + [feat]
+            return np.stack(seq, axis=0)
+
+        # Build buckets from oldest to newest
+        for i in range(0, len(slice_events), events_per_bucket):
+            bucket = slice_events[i:i + events_per_bucket]
+            if not bucket:
+                continue
+            buckets.append(self.calculate_features(bucket))
+
+        seq = np.stack(buckets, axis=0) if buckets else np.zeros((0, self.FEATURE_COUNT), dtype=np.float32)
+        # Adapt to 12 timesteps
+        if seq.shape[0] < self.SEQUENCE_LENGTH:
+            pad_rows = np.zeros((self.SEQUENCE_LENGTH - seq.shape[0], self.FEATURE_COUNT), dtype=np.float32)
+            seq = np.vstack([pad_rows, seq])
+        elif seq.shape[0] > self.SEQUENCE_LENGTH:
+            seq = seq[-self.SEQUENCE_LENGTH:]
+        return seq
     
     def prepare_model_input(self, feature_windows: List[np.ndarray]) -> np.ndarray:
         """Prepare 12-timestep sequence for model input."""
@@ -237,8 +280,8 @@ class AnomalyDetector:
             return 0.0
         
         try:
-            # Build a true time-bucketed sequence using configured horizon/buckets
-            seq_12x6 = self._build_time_bucket_sequence(events)
+            # Prefer event-bucketed sequence to better match training step windows
+            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=5)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             
@@ -287,7 +330,7 @@ class AnomalyDetector:
         """
         # Compute probabilities and class using time-bucketed sequence
         try:
-            seq_12x6 = self._build_time_bucket_sequence(events)
+            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=5)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             sequence_normalized = self.normalize_features(sequence)
@@ -299,12 +342,12 @@ class AnomalyDetector:
             score = self.predict(events)
             probs = np.array([1.0 - score, score * 0.6, score * 0.4], dtype=np.float32)
         # Decision rule: per-class thresholds if provided, otherwise combined
-        if self.fast_threshold is not None or self.slow_threshold is not None:
-            fast_ok = probs[1] >= (self.fast_threshold if self.fast_threshold is not None else self.threshold)
-            slow_ok = probs[2] >= (self.slow_threshold if self.slow_threshold is not None else self.threshold)
-            is_attack = bool(fast_ok or slow_ok)
-        else:
-            is_attack = score >= self.threshold
+        # Decision: combined OR per-class (if provided)
+        is_attack = (score >= self.threshold)
+        if self.fast_threshold is not None:
+            is_attack = is_attack or (probs[1] >= self.fast_threshold)
+        if self.slow_threshold is not None:
+            is_attack = is_attack or (probs[2] >= self.slow_threshold)
         predicted_class_idx = int(np.argmax(probs))
         predicted_class = self.CLASS_NAMES[predicted_class_idx]
         
