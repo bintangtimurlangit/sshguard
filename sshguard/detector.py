@@ -96,14 +96,14 @@ class AnomalyDetector:
         # 2. unique_source_ips - Number of unique source IPs
         unique_source_ips = len(set(event.ip for event in ssh_events_window))
         
-        # 3. majority_ratio - Ratio of most common label type
+        # 3. majority_ratio (runtime proxy): use ratio_failed = failed_auth / total_events
         if total_events > 0:
             label_counts = defaultdict(int)
             for event in ssh_events_window:
                 label_counts[event.event_type] += 1
-            majority_ratio = max(label_counts.values()) / total_events
+            ratio_failed = label_counts['failed_auth'] / total_events
         else:
-            majority_ratio = 0.0
+            ratio_failed = 0.0
         
         # 4. avg_interarrival_time - Average time between events
         if total_events > 1:
@@ -145,7 +145,7 @@ class AnomalyDetector:
         return np.array([
             total_events,
             unique_source_ips,
-            majority_ratio,
+            ratio_failed,
             avg_interarrival_time,
             burstiness,
             event_entropy
@@ -153,18 +153,6 @@ class AnomalyDetector:
 
     def _build_time_bucket_sequence(self, events: List[SSHEvent], total_horizon_seconds: int | None = None,
                                     bucket_count: int | None = None) -> np.ndarray:
-        """Build a (12,6) sequence using fixed time buckets over the last horizon.
-
-        The horizon is split into 12 equal buckets. For each bucket we compute the
-        six features over events that fall into that bucket.
-
-        Args:
-            events: List of SSH events for a single IP (timestamps are seconds)
-            total_horizon_seconds: Total time horizon to cover with 12 buckets
-
-        Returns:
-            ndarray of shape (12, 6)
-        """
         if total_horizon_seconds is None:
             total_horizon_seconds = self.sequence_horizon_seconds
         if bucket_count is None:
@@ -280,8 +268,8 @@ class AnomalyDetector:
             return 0.0
         
         try:
-            # Prefer event-bucketed sequence to better match training step windows
-            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=5)
+            # Prefer event-bucketed sequence to better match training step windows (≈3)
+            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=3)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             
@@ -330,7 +318,7 @@ class AnomalyDetector:
         """
         # Compute probabilities and class using time-bucketed sequence
         try:
-            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=5)
+            seq_12x6 = self._build_event_bucket_sequence(events, events_per_bucket=3)
             feature_windows = [seq_12x6[i] for i in range(self.SEQUENCE_LENGTH)]
             sequence = self.prepare_model_input(feature_windows)
             sequence_normalized = self.normalize_features(sequence)
