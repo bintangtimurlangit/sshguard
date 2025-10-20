@@ -16,7 +16,7 @@ from .log_monitor import SSHEvent
 
 class AnomalyDetector:
     SEQUENCE_LENGTH = 12
-    FEATURE_COUNT = 6
+    FEATURE_COUNT = 5
     
     CLASS_NAMES = ['benign', 'fast_attack', 'slow_rate_attack']
     ATTACK_CLASSES = [1, 2]
@@ -47,24 +47,21 @@ class AnomalyDetector:
         self.min_class_confidence = float(min_class_confidence)
         
         # Exact normalization parameters from Config C training (mixed dataset)
-        # Feature order: total_events, unique_source_ips, majority_ratio, 
-        #                avg_interarrival_time, burstiness, event_entropy
+        # Feature order: total_events, unique_source_ips, avg_interarrival_time, burstiness, event_entropy
         self.feature_mean = np.array([
-            603.18432617,    # total_events
-            21.29883957,     # unique_source_ips
-            0.77969247,      # majority_ratio
-            8.67684555,      # avg_interarrival_time
-            2.41349888,      # burstiness
-            0.78907585,      # event_entropy
+            603.18432617,   # total_events
+            21.29883957,    # unique_source_ips
+            8.67684555,     # avg_interarrival_time
+            2.41349888,     # burstiness
+            0.78907585,     # event_entropy
         ], dtype=np.float32)
         
         self.feature_std = np.array([
-            1775.83642578,   # total_events
-            21.85165024,     # unique_source_ips
-            0.15343687,      # majority_ratio
-            27.78080368,     # avg_interarrival_time
-            1.47318995,      # burstiness
-            0.38233167,      # event_entropy
+            1775.83642578,  # total_events
+            21.85165024,    # unique_source_ips
+            27.78080368,    # avg_interarrival_time
+            1.47318995,     # burstiness
+            0.38233167,     # event_entropy
         ], dtype=np.float32)
         
         if tf is None or keras is None:
@@ -82,15 +79,14 @@ class AnomalyDetector:
             raise
     
     def calculate_features(self, ssh_events_window: List[SSHEvent]) -> np.ndarray:
-        """Calculate the 6 required features for model input.
+        """Calculate the 5 required features for model input.
         
-        Features:
+        Features (in order):
         1. total_events - Activity level
-        2. unique_source_ips - IP diversity  
-        3. majority_ratio - Label confidence
-        4. avg_interarrival_time - Timing pattern
-        5. burstiness - Timing regularity
-        6. event_entropy - Pattern diversity
+        2. unique_source_ips - IP diversity
+        3. avg_interarrival_time - Timing pattern
+        4. burstiness - Timing regularity
+        5. event_entropy - Pattern diversity
         """
         
         # 1. total_events - Count of SSH events in window
@@ -99,16 +95,7 @@ class AnomalyDetector:
         # 2. unique_source_ips - Number of unique source IPs
         unique_source_ips = len(set(event.ip for event in ssh_events_window))
         
-        # 3. majority_ratio (runtime proxy): use ratio_failed = failed_auth / total_events
-        if total_events > 0:
-            label_counts = defaultdict(int)
-            for event in ssh_events_window:
-                label_counts[event.event_type] += 1
-            ratio_failed = label_counts['failed_auth'] / total_events
-        else:
-            ratio_failed = 0.0
-        
-        # 4. avg_interarrival_time - Average time between events
+        # 3. avg_interarrival_time - Average time between events
         if total_events > 1:
             timestamps = sorted([event.timestamp for event in ssh_events_window])
             intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
@@ -116,7 +103,7 @@ class AnomalyDetector:
         else:
             avg_interarrival_time = 0.0
         
-        # 5. burstiness - Measure of timing regularity (coefficient of variation)
+        # 4. burstiness - Measure of timing regularity (coefficient of variation)
         if total_events > 2:
             timestamps = sorted([event.timestamp for event in ssh_events_window])
             intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
@@ -130,7 +117,7 @@ class AnomalyDetector:
         else:
             burstiness = 0.0
         
-        # 6. event_entropy - Shannon entropy of event types
+        # 5. event_entropy - Shannon entropy of event types
         if total_events > 0:
             type_counts = defaultdict(int)
             for event in ssh_events_window:
@@ -148,7 +135,6 @@ class AnomalyDetector:
         return np.array([
             total_events,
             unique_source_ips,
-            ratio_failed,
             avg_interarrival_time,
             burstiness,
             event_entropy
@@ -187,7 +173,7 @@ class AnomalyDetector:
 
     def _build_event_bucket_sequence(self, events: List[SSHEvent], events_per_bucket: int = 5,
                                      bucket_count: int | None = None) -> np.ndarray:
-        """Build a (12,6) sequence using fixed number of events per bucket.
+        """Build a (12,5) sequence using fixed number of events per bucket.
 
         Takes the last (bucket_count * events_per_bucket) events for the IP,
         splits them into contiguous buckets (oldest to newest), and computes
@@ -246,10 +232,10 @@ class AnomalyDetector:
             # Take last 12 windows
             feature_windows = feature_windows[-self.SEQUENCE_LENGTH:]
         
-        # Stack into sequence: shape (12, 6)
+        # Stack into sequence: shape (12, FEATURE_COUNT)
         sequence = np.stack(feature_windows)
         
-        # Add batch dimension: shape (1, 12, 6)
+        # Add batch dimension: shape (1, 12, FEATURE_COUNT)
         sequence = np.expand_dims(sequence, axis=0)
         
         return sequence
