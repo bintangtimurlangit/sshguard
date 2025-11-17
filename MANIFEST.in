@@ -1,7 +1,7 @@
 include README.md
 include LICENSE
 include requirements.txt
-recursive-include models *.keras
+recursive-include models *.keras *.pkl
 recursive-include config *.conf
 recursive-include systemd *.service
 recursive-include debian *

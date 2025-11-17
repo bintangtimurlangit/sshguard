@@ -39,7 +39,11 @@ setup(
     },
     
     data_files=[
-        ('share/sshguard/models', ['models/lstm-ids.keras']),
+        ('share/sshguard/models', [
+            'models/lstm_model.keras',
+            'models/scaler.pkl',
+            'models/label_encoder.pkl'
+        ]),
         ('etc/sshguard', ['config/sshguard.conf']),
     ],
     
