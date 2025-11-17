@@ -13,7 +13,7 @@ class SSHEvent:
             timestamp: Unix timestamp
             ip: Source IP address
             username: Attempted username
-            event_type: Type of event (failed_auth, accepted_auth, invalid_user)
+            event_type: Type of event (failed_password, auth_failure, accepted_password, invalid_user)
         """
         self.timestamp = timestamp
         self.ip = ip
@@ -75,13 +75,13 @@ class LogMonitor:
         match = self.FAILED_PASSWORD.search(line)
         if match:
             username, ip = match.groups()
-            return SSHEvent(timestamp, ip, username, 'failed_auth')
+            return SSHEvent(timestamp, ip, username, 'failed_password')
         
         # Check for accepted password
         match = self.ACCEPTED_PASSWORD.search(line)
         if match:
             username, ip = match.groups()
-            return SSHEvent(timestamp, ip, username, 'accepted_auth')
+            return SSHEvent(timestamp, ip, username, 'accepted_password')
         
         # Check for invalid user
         match = self.INVALID_USER.search(line)
@@ -93,7 +93,7 @@ class LogMonitor:
         match = self.AUTH_FAILURE.search(line)
         if match:
             ip, username = match.groups()
-            return SSHEvent(timestamp, ip, username, 'failed_auth')
+            return SSHEvent(timestamp, ip, username, 'auth_failure')
         
         return None
     

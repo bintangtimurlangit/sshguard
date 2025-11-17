@@ -1,4 +1,6 @@
 config/sshguard.conf etc/sshguard/
-models/lstm-ids.keras usr/lib/sshguard/models/
+models/lstm_model.keras usr/lib/sshguard/models/
+models/scaler.pkl usr/lib/sshguard/models/
+models/label_encoder.pkl usr/lib/sshguard/models/
 systemd/sshguard.service lib/systemd/system/
 

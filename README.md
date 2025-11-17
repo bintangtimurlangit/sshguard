@@ -63,7 +63,9 @@ sudo pip3 install --break-system-packages tensorflow>=2.10.0
 sudo python3 setup.py install
 sudo cp systemd/sshguard.service /lib/systemd/system/
 sudo mkdir -p /usr/lib/sshguard/models /etc/sshguard
-sudo cp models/lstm-ids.keras /usr/lib/sshguard/models/
+sudo cp models/lstm_model.keras /usr/lib/sshguard/models/
+sudo cp models/scaler.pkl /usr/lib/sshguard/models/
+sudo cp models/label_encoder.pkl /usr/lib/sshguard/models/
 sudo cp config/sshguard.conf /etc/sshguard/
 sudo cp scripts/sshguard /usr/bin/
 sudo chmod +x /usr/bin/sshguard

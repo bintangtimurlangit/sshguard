@@ -49,12 +49,8 @@ class SSHGuardService:
             
             self.detector = AnomalyDetector(
                 model_path=self.config.get('general', 'model_path'),
-                threshold=self.config.get_float('general', 'detection_threshold', 0.8),
-                sequence_horizon_seconds=self.config.get_int('general', 'sequence_horizon_seconds', 60),
-                bucket_count=self.config.get_int('general', 'bucket_count', 12),
-                fast_threshold=self.config.get_float('general', 'fast_threshold', None),
-                slow_threshold=self.config.get_float('general', 'slow_threshold', None),
-                min_class_confidence=self.config.get_float('general', 'min_class_confidence', 0.5)
+                threshold=self.config.get_float('general', 'detection_threshold', 0.5),
+                window_seconds=self.config.get_int('general', 'window_seconds', 86400)
             )
             
             if self.config.get_bool('firewall', 'enabled', True):
@@ -188,8 +184,9 @@ class SSHGuardService:
                                         f"IP BLOCKED: {event.ip} | "
                                         f"Score: {analysis['score']:.3f} | "
                                         f"Events: {len(events)} | "
-                                        f"Failed: {analysis['event_types']['failed_auth']} | "
-                                        f"Invalid: {analysis['event_types']['invalid_user']}"
+                                        f"Failed: {analysis['event_types'].get('failed_password', 0)} | "
+                                        f"Auth Fail: {analysis['event_types'].get('auth_failure', 0)} | "
+                                        f"Invalid: {analysis['event_types'].get('invalid_user', 0)}"
                                     )
                                 else:
                                     self.logger.info(f"IP {event.ip} already blocked or firewall disabled")
