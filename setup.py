@@ -21,7 +21,7 @@ setup(
     long_description_content_type='text/markdown',
     author='SSHGuard Team',
     author_email='',
-    url='https://github.com/yourusername/SSHGuard',
+    url='https://github.com/bintangtimurlangit/SSHGuard',
     license='MIT',
     
     packages=find_packages(),
