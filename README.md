@@ -26,7 +26,7 @@ cd sshguard
 2) Install build dependencies
 ```bash
 sudo apt-get update
-sudo apt-get install -y debhelper dh-python python3-all python3-setuptools python3-pip python3-numpy iptables
+sudo apt-get install -y debhelper dh-python python3-all python3-setuptools python3-pip python3-numpy python3-pandas python3-sklearn iptables
 ```
 
 3) Build package
@@ -51,11 +51,11 @@ git clone https://github.com/bintangtimurlangit/sshguard.git
 cd sshguard
 ```
 
-2) System dependencies and TensorFlow
+2) System dependencies and Python packages
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pip python3-numpy iptables
-sudo pip3 install --break-system-packages tensorflow>=2.10.0
+sudo apt-get install -y python3-pip python3-numpy python3-pandas python3-sklearn iptables
+sudo pip3 install --break-system-packages tensorflow>=2.10.0 pandas>=1.3.0 scikit-learn>=1.0.0
 ```
 
 3) Install and register service
@@ -113,7 +113,9 @@ watch -n 2 'sudo sshguard list'
 
 - Python 3.8+
 - TensorFlow 2.x
-- Runtime packages on Debian/Ubuntu: python3, python3-numpy, python3-pip
+- pandas 1.3+
+- scikit-learn 1.0+
+- Runtime packages on Debian/Ubuntu: python3, python3-numpy, python3-pandas, python3-sklearn, python3-pip
 - Root/sudo privileges for iptables management
 - Systemd-based Linux distribution
 

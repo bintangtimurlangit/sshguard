@@ -16,7 +16,7 @@ from .log_monitor import SSHEvent
 
 
 class AnomalyDetector:
-    FEATURE_COUNT = 15
+    FEATURE_COUNT = 12
     
     def __init__(self, model_path: str, threshold: float = 0.5,
                  window_seconds: int = 86400):
@@ -53,7 +53,8 @@ class AnomalyDetector:
             
             with open(models_dir / "label_encoder.pkl", "rb") as f:
                 self.label_encoder = pickle.load(f)
-                self.label_decoder = {idx: label for label, idx in self.label_encoder.items()}
+                # Create decoder mapping from label encoder classes
+                self.label_decoder = {idx: label for idx, label in enumerate(self.label_encoder.classes_)}
             self.logger.info("Loaded label encoder")
             
         except Exception as e:
@@ -61,59 +62,53 @@ class AnomalyDetector:
             raise
     
     def calculate_features(self, events: List[SSHEvent]) -> np.ndarray:
+        """Calculate the 12 features that match the trained model.
+        
+        Features match those used in code_NN.ipynb:
+        ['n_events', 'n_invalid_user', 'n_disconnects', 'n_days_seen',
+         'events_density', 'disconnect_density', 'invalid_user_density', 
+         'invalid_user_ratio', 'disconnect_ratio', 'event_spread', 
+         'burstiness', 'activity_irregularity']
+        """
         if not events:
             return np.zeros(self.FEATURE_COUNT, dtype=np.float32)
         
-        timestamps = sorted([e.timestamp for e in events])
-        first_ts = timestamps[0]
-        last_ts = timestamps[-1]
-        duration = max(last_ts - first_ts, 1.0)
-        
+        # Basic counts
         n_events = len(events)
-        n_failed_password = sum(1 for e in events if e.event_type == 'failed_password')
         n_invalid_user = sum(1 for e in events if e.event_type == 'invalid_user')
-        n_auth_failure = sum(1 for e in events if e.event_type == 'auth_failure')
-        n_disconnects = 0
+        n_disconnects = sum(1 for e in events if 'disconnect' in e.event_type.lower())
+        n_days_seen = 1.0  # For real-time detection, assume 1 day window
         
-        usernames = set(e.username for e in events if e.username)
-        n_distinct_users = len(usernames)
+        # Density Features (per-day behavior)
+        events_density = n_events / max(n_days_seen, 1)
+        disconnect_density = n_disconnects / max(n_days_seen, 1)
+        invalid_user_density = n_invalid_user / max(n_days_seen, 1)
         
-        accepted_sessions = sum(1 for e in events if e.event_type == 'accepted_password')
+        # Proportion Features
+        invalid_user_ratio = n_invalid_user / max(n_events, 1)
+        disconnect_ratio = n_disconnects / max(n_events, 1)
         
-        if len(timestamps) > 1:
-            intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
-            median_dt = np.median(intervals) if intervals else 0.0
-        else:
-            median_dt = 0.0
+        # Temporal behavior without duration or median_dt
+        event_spread = n_days_seen / max(n_events, 1)
+        burstiness = (n_events - n_days_seen) / max(n_events, 1)
         
-        if accepted_sessions + n_failed_password > 0:
-            success_ratio = accepted_sessions / (accepted_sessions + n_failed_password)
-        else:
-            success_ratio = 0.0
+        # Irregularity score
+        activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1)
         
-        n_days_seen = 1.0
-        
-        log_duration = np.log1p(duration)
-        log_median_dt = np.log1p(median_dt)
-        fail_rate = n_failed_password / duration if duration > 0 else 0.0
-        events_per_second = n_events / duration if duration > 0 else 0.0
-        
+        # Create feature array matching training script order
         features = np.array([
             n_events,
-            n_failed_password,
             n_invalid_user,
-            n_auth_failure,
             n_disconnects,
-            n_distinct_users,
-            accepted_sessions,
-            duration,
-            median_dt,
-            success_ratio,
             n_days_seen,
-            log_duration,
-            log_median_dt,
-            fail_rate,
-            events_per_second
+            events_density,
+            disconnect_density,
+            invalid_user_density,
+            invalid_user_ratio,
+            disconnect_ratio,
+            event_spread,
+            burstiness,
+            activity_irregularity
         ], dtype=np.float32)
         
         return features
