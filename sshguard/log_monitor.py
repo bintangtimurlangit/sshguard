@@ -42,6 +42,11 @@ class LogMonitor:
     TIMESTAMP = re.compile(
         r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}|\w+\s+\d+\s+\d+:\d+:\d+)'
     )
+    # Month name to number mapping
+    MONTHS = {
+        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+        'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+    }
     
     def __init__(self, log_file: str, window_size: int = 100):
         """Initialize log monitor.
@@ -54,6 +59,39 @@ class LogMonitor:
         self.window_size = window_size
         self.ip_windows: Dict[str, deque] = defaultdict(lambda: deque(maxlen=window_size))
         self.tail_process: Optional[subprocess.Popen] = None
+    
+    def _parse_timestamp(self, ts_str: str) -> float:
+        """Parse timestamp string to Unix timestamp.
+        
+        Args:
+            ts_str: Timestamp string (ISO format or syslog format)
+            
+        Returns:
+            Unix timestamp (float)
+        """
+        try:
+            # Try ISO format first: 2024-01-15T10:30:45
+            if 'T' in ts_str:
+                dt = datetime.strptime(ts_str, '%Y-%m-%dT%H:%M:%S')
+                return dt.timestamp()
+            else:
+                # Syslog format: Jan 15 10:30:45
+                # Note: syslog format doesn't include year, assume current year
+                parts = ts_str.split()
+                if len(parts) >= 3:
+                    month_name, day, time_str = parts[0], parts[1], parts[2]
+                    month = self.MONTHS.get(month_name, 1)
+                    current_year = datetime.now().year
+                    dt = datetime.strptime(
+                        f"{current_year}-{month:02d}-{day:02d} {time_str}",
+                        '%Y-%m-%d %H:%M:%S'
+                    )
+                    return dt.timestamp()
+        except (ValueError, KeyError) as e:
+            # Fallback to current time if parsing fails
+            return time.time()
+        
+        return time.time()
     
     def parse_line(self, line: str) -> Optional[SSHEvent]:
         """Parse a single log line.
@@ -69,7 +107,8 @@ class LogMonitor:
         if not ts_match:
             return None
         
-        timestamp = time.time()  # Use current time for simplicity
+        # Parse actual timestamp from log
+        timestamp = self._parse_timestamp(ts_match.group(1))
         
         # Check for failed password
         match = self.FAILED_PASSWORD.search(line)
@@ -105,16 +144,24 @@ class LogMonitor:
         """
         self.ip_windows[event.ip].append(event)
     
-    def get_event_sequence(self, ip: str) -> List[SSHEvent]:
-        """Get event sequence for an IP.
+    def get_event_sequence(self, ip: str, max_age_seconds: Optional[int] = None) -> List[SSHEvent]:
+        """Get event sequence for an IP, optionally filtered by age.
         
         Args:
             ip: IP address
+            max_age_seconds: If provided, only return events within this time window
             
         Returns:
-            List of SSH events for the IP
+            List of SSH events for the IP (optionally filtered by time)
         """
-        return list(self.ip_windows[ip])
+        events = list(self.ip_windows[ip])
+        
+        if max_age_seconds is not None:
+            current_time = time.time()
+            cutoff_time = current_time - max_age_seconds
+            events = [e for e in events if e.timestamp >= cutoff_time]
+        
+        return events
     
     def start_tail(self):
         """Start tailing the log file.

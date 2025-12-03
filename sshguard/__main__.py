@@ -123,8 +123,13 @@ class SSHGuardService:
                     # Add event to IP window
                     self.monitor.add_event(event)
                     
-                    # Get event sequence for this IP
-                    events = self.monitor.get_event_sequence(event.ip)
+                    # Get event sequence for this IP, filtered to time window
+                    # The detector will further filter to window_seconds, but we can
+                    # optimize by pre-filtering here
+                    events = self.monitor.get_event_sequence(
+                        event.ip, 
+                        max_age_seconds=self.detector.window_seconds
+                    )
                     
                     # Only analyze if we have enough events (lowered for testing)
                     if len(events) >= 3:

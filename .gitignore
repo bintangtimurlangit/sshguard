@@ -50,3 +50,5 @@ debian/sshguard/
 .coverage
 htmlcov/
 
+# Training/Notebooks
+code_NN.ipynb

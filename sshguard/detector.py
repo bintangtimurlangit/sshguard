@@ -1,9 +1,11 @@
 import numpy as np
 import pickle
+import time
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 try:
     import tensorflow as tf
@@ -28,6 +30,10 @@ class AnomalyDetector:
         self.label_encoder = None
         self.label_decoder = None
         self.logger = logging.getLogger(__name__)
+        
+        # Track historical days per IP (matches training: ip_day_counts = agg.groupby("src_ip")["day"].nunique())
+        # This tracks unique days across ALL time for each IP, not just current window
+        self.ip_history_days: Dict[str, set] = defaultdict(set)
         
         if tf is None or keras is None:
             raise ImportError("TensorFlow is required for anomaly detection")
@@ -61,7 +67,59 @@ class AnomalyDetector:
             self.logger.error(f"Failed to load preprocessing objects: {e}")
             raise
     
-    def calculate_features(self, events: List[SSHEvent]) -> np.ndarray:
+    def filter_events_by_window(self, events: List[SSHEvent]) -> List[SSHEvent]:
+        """Filter events to only include those within the configured time window.
+        
+        This ensures we match the training data which used 24-hour windows.
+        For real-time detection, we only analyze events from the last window_seconds.
+        
+        Args:
+            events: List of all events for an IP
+            
+        Returns:
+            Filtered list of events within the time window
+        """
+        if not events or self.window_seconds <= 0:
+            return events
+        
+        current_time = time.time()
+        cutoff_time = current_time - self.window_seconds
+        
+        filtered = [e for e in events if e.timestamp >= cutoff_time]
+        return filtered
+    
+    def update_ip_history(self, ip: str, events: List[SSHEvent]):
+        """Update historical day tracking for an IP.
+        
+        In training, n_days_seen is calculated per IP across ALL their windows:
+        ip_day_counts = agg.groupby("src_ip")["day"].nunique()
+        
+        This method maintains that historical context by tracking all unique
+        days an IP has been seen, not just in the current window.
+        
+        Args:
+            ip: IP address
+            events: Events to extract dates from
+        """
+        for e in events:
+            dt = datetime.fromtimestamp(e.timestamp)
+            self.ip_history_days[ip].add(dt.date())
+    
+    def get_n_days_seen(self, ip: str) -> float:
+        """Get historical n_days_seen for an IP.
+        
+        This matches training: ip_day_counts = agg.groupby("src_ip")["day"].nunique()
+        Returns the number of unique days this IP has been seen across ALL time.
+        
+        Args:
+            ip: IP address
+            
+        Returns:
+            Number of unique days (float)
+        """
+        return float(len(self.ip_history_days.get(ip, set())))
+    
+    def calculate_features(self, events: List[SSHEvent], ip: Optional[str] = None) -> np.ndarray:
         """Calculate the 12 features that match the trained model.
         
         Features match those used in code_NN.ipynb:
@@ -69,31 +127,58 @@ class AnomalyDetector:
          'events_density', 'disconnect_density', 'invalid_user_density', 
          'invalid_user_ratio', 'disconnect_ratio', 'event_spread', 
          'burstiness', 'activity_irregularity']
+        
+        IMPORTANT: 
+        - This method expects events to already be filtered to the appropriate 
+          time window (e.g., last 24 hours) to match training data.
+        - n_days_seen is calculated per IP across ALL historical windows,
+          not just the current window. Use update_ip_history() to maintain this.
+        - If ip is provided, uses historical n_days_seen; otherwise calculates
+          from current events only (fallback).
         """
         if not events:
             return np.zeros(self.FEATURE_COUNT, dtype=np.float32)
         
-        # Basic counts
+        # Basic counts (from current window events)
         n_events = len(events)
         n_invalid_user = sum(1 for e in events if e.event_type == 'invalid_user')
         n_disconnects = sum(1 for e in events if 'disconnect' in e.event_type.lower())
-        n_days_seen = 1.0  # For real-time detection, assume 1 day window
+        
+        # Calculate n_days_seen: number of unique days per IP across ALL time
+        # Training: ip_day_counts = agg.groupby("src_ip")["day"].nunique()
+        # This is calculated per IP across all their windows, not per window
+        if ip and ip in self.ip_history_days:
+            # Use historical tracking (matches training)
+            n_days_seen = self.get_n_days_seen(ip)
+        else:
+            # Fallback: calculate from current events only
+            # This is less accurate but works if IP history isn't available
+            unique_dates = set()
+            for e in events:
+                dt = datetime.fromtimestamp(e.timestamp)
+                unique_dates.add(dt.date())
+            n_days_seen = float(len(unique_dates))
         
         # Density Features (per-day behavior)
-        events_density = n_events / max(n_days_seen, 1)
-        disconnect_density = n_disconnects / max(n_days_seen, 1)
-        invalid_user_density = n_invalid_user / max(n_days_seen, 1)
+        # Training: events_density = n_events / (n_days_seen.replace(0, 1))
+        events_density = n_events / max(n_days_seen, 1.0)
+        disconnect_density = n_disconnects / max(n_days_seen, 1.0)
+        invalid_user_density = n_invalid_user / max(n_days_seen, 1.0)
         
         # Proportion Features
-        invalid_user_ratio = n_invalid_user / max(n_events, 1)
-        disconnect_ratio = n_disconnects / max(n_events, 1)
+        # Training: invalid_user_ratio = n_invalid_user / (n_events.replace(0, 1))
+        invalid_user_ratio = n_invalid_user / max(n_events, 1.0)
+        disconnect_ratio = n_disconnects / max(n_events, 1.0)
         
         # Temporal behavior without duration or median_dt
-        event_spread = n_days_seen / max(n_events, 1)
-        burstiness = (n_events - n_days_seen) / max(n_events, 1)
+        # Training: event_spread = n_days_seen / (n_events.replace(0, 1))
+        event_spread = n_days_seen / max(n_events, 1.0)
+        # Training: burstiness = (n_events - n_days_seen) / (n_events.replace(0, 1))
+        burstiness = (n_events - n_days_seen) / max(n_events, 1.0)
         
         # Irregularity score
-        activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1)
+        # Training: activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1)
+        activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1.0)
         
         # Create feature array matching training script order
         features = np.array([
@@ -120,12 +205,21 @@ class AnomalyDetector:
         
         return features_reshaped
     
-    def predict(self, events: List[SSHEvent]) -> float:
+    def predict(self, events: List[SSHEvent], ip: Optional[str] = None) -> float:
         if not events:
             return 0.0
         
         try:
-            features = self.calculate_features(events)
+            # Update IP history if IP is provided
+            if ip:
+                self.update_ip_history(ip, events)
+            
+            # Filter events to match training window (24h)
+            events = self.filter_events_by_window(events)
+            if not events:
+                return 0.0
+            
+            features = self.calculate_features(events, ip=ip)
             
             model_input = self.prepare_model_input(features)
             
@@ -162,7 +256,27 @@ class AnomalyDetector:
     
     def analyze_ip(self, ip: str, events: List[SSHEvent]) -> Dict:
         try:
-            features = self.calculate_features(events)
+            # Update IP history with all events (for n_days_seen calculation)
+            # This maintains historical context across all time, not just current window
+            self.update_ip_history(ip, events)
+            
+            # Filter events to match training window (24h)
+            events = self.filter_events_by_window(events)
+            if not events:
+                # Return benign result if no events in window
+                return {
+                    'ip': ip,
+                    'is_attack': False,
+                    'score': 0.0,
+                    'event_count': 0,
+                    'event_types': {},
+                    'threshold': self.threshold,
+                    'predicted_class': 'BENIGN',
+                    'class_probs': {}
+                }
+            
+            # Calculate features with IP context for historical n_days_seen
+            features = self.calculate_features(events, ip=ip)
             model_input = self.prepare_model_input(features)
             
             pred = self.model.predict(model_input, verbose=0)
