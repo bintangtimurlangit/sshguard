@@ -102,13 +102,23 @@ class LogMonitor:
         Returns:
             SSHEvent if line contains SSH event, None otherwise
         """
-        # Extract timestamp
-        ts_match = self.TIMESTAMP.match(line)
-        if not ts_match:
-            return None
+        # For replay logs, prefer the original timestamp (after "replay:")
+        # Format: 2025-12-03T04:06:17 test1-sshguard replay: Dec 10 06:55:46 LabSZ sshd[...]
+        original_ts_match = None
+        if 'replay:' in line:
+            # Look for syslog format timestamp after "replay:"
+            # Pattern: "replay: Dec 10 06:55:46"
+            replay_ts_pattern = re.compile(r'replay:\s+(\w+\s+\d+\s+\d+:\d+:\d+)')
+            original_ts_match = replay_ts_pattern.search(line)
         
-        # Parse actual timestamp from log
-        timestamp = self._parse_timestamp(ts_match.group(1))
+        # Extract timestamp - prefer original timestamp from replay if found
+        if original_ts_match:
+            timestamp = self._parse_timestamp(original_ts_match.group(1))
+        else:
+            ts_match = self.TIMESTAMP.match(line)
+            if not ts_match:
+                return None
+            timestamp = self._parse_timestamp(ts_match.group(1))
         
         # Check for failed password
         match = self.FAILED_PASSWORD.search(line)
