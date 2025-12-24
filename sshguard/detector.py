@@ -4,8 +4,8 @@ import time
 from pathlib import Path
 from typing import List, Dict, Optional
 import logging
-from collections import defaultdict
-from datetime import datetime
+from collections import defaultdict, Counter
+from datetime import datetime, timedelta
 
 try:
     import tensorflow as tf
@@ -18,10 +18,11 @@ from .log_monitor import SSHEvent
 
 
 class AnomalyDetector:
-    FEATURE_COUNT = 12
+    FEATURE_COUNT = 9
+    SEQUENCE_LENGTH = 3
     
     def __init__(self, model_path: str, threshold: float = 0.5,
-                 window_seconds: int = 86400):
+                 window_seconds: int = 3600):
         self.model_path = model_path
         self.threshold = threshold
         self.window_seconds = window_seconds
@@ -29,11 +30,11 @@ class AnomalyDetector:
         self.scaler = None
         self.label_encoder = None
         self.label_decoder = None
+        self.model_config = None
         self.logger = logging.getLogger(__name__)
         
-        # Track historical days per IP (matches training: ip_day_counts = agg.groupby("src_ip")["day"].nunique())
-        # This tracks unique days across ALL time for each IP, not just current window
-        self.ip_history_days: Dict[str, set] = defaultdict(set)
+        self.ip_failed_days: Dict[str, set] = defaultdict(set)
+        self.ip_window_history: Dict[str, List[Dict]] = defaultdict(list)
         
         if tf is None or keras is None:
             raise ImportError("TensorFlow is required for anomaly detection")
@@ -59,169 +60,178 @@ class AnomalyDetector:
             
             with open(models_dir / "label_encoder.pkl", "rb") as f:
                 self.label_encoder = pickle.load(f)
-                # Create decoder mapping from label encoder classes
                 self.label_decoder = {idx: label for idx, label in enumerate(self.label_encoder.classes_)}
             self.logger.info("Loaded label encoder")
+            
+            with open(models_dir / "model_config.pkl", "rb") as f:
+                self.model_config = pickle.load(f)
+                if "sequence_length" in self.model_config:
+                    self.SEQUENCE_LENGTH = self.model_config["sequence_length"]
+            self.logger.info("Loaded model config")
             
         except Exception as e:
             self.logger.error(f"Failed to load preprocessing objects: {e}")
             raise
     
-    def filter_events_by_window(self, events: List[SSHEvent]) -> List[SSHEvent]:
-        """Filter events to only include those within the configured time window.
-        
-        This ensures we match the training data which used 24-hour windows.
-        For real-time detection, we only analyze events from the last window_seconds.
-        
-        Args:
-            events: List of all events for an IP
-            
-        Returns:
-            Filtered list of events within the time window
-        """
-        if not events or self.window_seconds <= 0:
-            return events
-        
-        current_time = time.time()
-        cutoff_time = current_time - self.window_seconds
-        
-        filtered = [e for e in events if e.timestamp >= cutoff_time]
-        return filtered
+    def _compute_entropy(self, values: List) -> float:
+        if len(values) == 0:
+            return 0.0
+        counts = Counter(values)
+        total = len(values)
+        probs = [count / total for count in counts.values()]
+        return -sum(p * np.log2(p + 1e-10) for p in probs)
     
-    def update_ip_history(self, ip: str, events: List[SSHEvent]):
-        """Update historical day tracking for an IP.
-        
-        In training, n_days_seen is calculated per IP across ALL their windows:
-        ip_day_counts = agg.groupby("src_ip")["day"].nunique()
-        
-        This method maintains that historical context by tracking all unique
-        days an IP has been seen, not just in the current window.
-        
-        Args:
-            ip: IP address
-            events: Events to extract dates from
-        """
+    def _update_failed_days(self, ip: str, events: List[SSHEvent]):
+        for e in events:
+            if e.event_type == "failed_password":
+                dt = datetime.fromtimestamp(e.timestamp)
+                self.ip_failed_days[ip].add(dt.date())
+    
+    def _get_num_failed_days(self, ip: str) -> float:
+        return float(len(self.ip_failed_days.get(ip, set())))
+    
+    def _group_events_by_hour(self, events: List[SSHEvent]) -> Dict[datetime, List[SSHEvent]]:
+        hourly_groups = defaultdict(list)
         for e in events:
             dt = datetime.fromtimestamp(e.timestamp)
-            self.ip_history_days[ip].add(dt.date())
-    
-    def get_n_days_seen(self, ip: str) -> float:
-        """Get historical n_days_seen for an IP.
-        
-        This matches training: ip_day_counts = agg.groupby("src_ip")["day"].nunique()
-        Returns the number of unique days this IP has been seen across ALL time.
-        
-        Args:
-            ip: IP address
-            
-        Returns:
-            Number of unique days (float)
-        """
-        return float(len(self.ip_history_days.get(ip, set())))
+            hour_start = dt.replace(minute=0, second=0, microsecond=0)
+            hourly_groups[hour_start].append(e)
+        return dict(hourly_groups)
     
     def calculate_features(self, events: List[SSHEvent], ip: Optional[str] = None) -> np.ndarray:
-        """Calculate the 12 features that match the trained model.
-        
-        Features match those used in code_NN.ipynb:
-        ['n_events', 'n_invalid_user', 'n_disconnects', 'n_days_seen',
-         'events_density', 'disconnect_density', 'invalid_user_density', 
-         'invalid_user_ratio', 'disconnect_ratio', 'event_spread', 
-         'burstiness', 'activity_irregularity']
-        
-        IMPORTANT: 
-        - This method expects events to already be filtered to the appropriate 
-          time window (e.g., last 24 hours) to match training data.
-        - n_days_seen is calculated per IP across ALL historical windows,
-          not just the current window. Use update_ip_history() to maintain this.
-        - If ip is provided, uses historical n_days_seen; otherwise calculates
-          from current events only (fallback).
-        """
         if not events:
             return np.zeros(self.FEATURE_COUNT, dtype=np.float32)
         
-        # Basic counts (from current window events)
-        n_events = len(events)
-        n_invalid_user = sum(1 for e in events if e.event_type == 'invalid_user')
-        n_disconnects = sum(1 for e in events if 'disconnect' in e.event_type.lower())
+        events_sorted = sorted(events, key=lambda e: e.timestamp)
         
-        # Calculate n_days_seen: number of unique days per IP across ALL time
-        # Training: ip_day_counts = agg.groupby("src_ip")["day"].nunique()
-        # This is calculated per IP across all their windows, not per window
-        if ip and ip in self.ip_history_days:
-            # Use historical tracking (matches training)
-            n_days_seen = self.get_n_days_seen(ip)
+        failed = [e for e in events if e.event_type == "failed_password"]
+        accepted = [e for e in events if "accepted" in e.event_type.lower()]
+        
+        n_failed_password = len(failed)
+        n_distinct_users = len(set(e.username for e in events if e.username))
+        accepted_sessions = len(accepted)
+        
+        total_attempts = n_failed_password + accepted_sessions
+        success_ratio = accepted_sessions / total_attempts if total_attempts > 0 else 0.0
+        
+        failed_ports = set()
+        for e in failed:
+            if hasattr(e, 'src_port') and e.src_port:
+                failed_ports.add(e.src_port)
+        num_failed_ports = len(failed_ports)
+        
+        timestamps = np.array([e.timestamp for e in events_sorted])
+        if len(timestamps) > 1:
+            time_diffs = np.diff(timestamps)
+            avg_time_between_attempts = np.mean(time_diffs) if len(time_diffs) > 0 else 0.0
+            login_interval_variance = np.var(time_diffs) if len(time_diffs) > 0 else 0.0
         else:
-            # Fallback: calculate from current events only
-            # This is less accurate but works if IP history isn't available
-            unique_dates = set()
-            for e in events:
-                dt = datetime.fromtimestamp(e.timestamp)
-                unique_dates.add(dt.date())
-            n_days_seen = float(len(unique_dates))
+            avg_time_between_attempts = 0.0
+            login_interval_variance = 0.0
         
-        # Density Features (per-day behavior)
-        # Training: events_density = n_events / (n_days_seen.replace(0, 1))
-        events_density = n_events / max(n_days_seen, 1.0)
-        disconnect_density = n_disconnects / max(n_days_seen, 1.0)
-        invalid_user_density = n_invalid_user / max(n_days_seen, 1.0)
+        time_of_day_seconds = np.array([ts % 86400 for ts in timestamps])
+        time_of_day_avg = np.mean(time_of_day_seconds) if len(time_of_day_seconds) > 0 else 0.0
         
-        # Proportion Features
-        # Training: invalid_user_ratio = n_invalid_user / (n_events.replace(0, 1))
-        invalid_user_ratio = n_invalid_user / max(n_events, 1.0)
-        disconnect_ratio = n_disconnects / max(n_events, 1.0)
+        usernames = [e.username for e in events if e.username]
+        username_entropy = self._compute_entropy(usernames)
         
-        # Temporal behavior without duration or median_dt
-        # Training: event_spread = n_days_seen / (n_events.replace(0, 1))
-        event_spread = n_days_seen / max(n_events, 1.0)
-        # Training: burstiness = (n_events - n_days_seen) / (n_events.replace(0, 1))
-        burstiness = (n_events - n_days_seen) / max(n_events, 1.0)
+        num_failed_days = self._get_num_failed_days(ip) if ip else 0.0
         
-        # Irregularity score
-        # Training: activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1)
-        activity_irregularity = (n_invalid_user + n_disconnects) / (n_days_seen + n_events + 1.0)
-        
-        # Create feature array matching training script order
         features = np.array([
-            n_events,
-            n_invalid_user,
-            n_disconnects,
-            n_days_seen,
-            events_density,
-            disconnect_density,
-            invalid_user_density,
-            invalid_user_ratio,
-            disconnect_ratio,
-            event_spread,
-            burstiness,
-            activity_irregularity
+            n_failed_password,
+            n_distinct_users,
+            avg_time_between_attempts,
+            num_failed_ports,
+            success_ratio,
+            login_interval_variance,
+            username_entropy,
+            time_of_day_avg,
+            num_failed_days
         ], dtype=np.float32)
         
         return features
     
-    def prepare_model_input(self, features: np.ndarray) -> np.ndarray:
-        features_scaled = self.scaler.transform(features.reshape(1, -1))
+    def prepare_model_input(self, sequence_features: List[np.ndarray]) -> np.ndarray:
+        if len(sequence_features) < self.SEQUENCE_LENGTH:
+            padding = [np.zeros(self.FEATURE_COUNT, dtype=np.float32)] * (self.SEQUENCE_LENGTH - len(sequence_features))
+            sequence_features = padding + sequence_features
         
-        features_reshaped = features_scaled.reshape(1, self.FEATURE_COUNT, 1)
+        sequence_features = sequence_features[-self.SEQUENCE_LENGTH:]
+        
+        features_array = np.array(sequence_features)
+        features_flat = features_array.reshape(-1, self.FEATURE_COUNT)
+        features_scaled = self.scaler.transform(features_flat)
+        features_reshaped = features_scaled.reshape(1, self.SEQUENCE_LENGTH, self.FEATURE_COUNT)
         
         return features_reshaped
+    
+    def _update_window_history(self, ip: str, events: List[SSHEvent]):
+        if not ip:
+            return
+        
+        self._update_failed_days(ip, events)
+        
+        hourly_groups = self._group_events_by_hour(events)
+        current_time = time.time()
+        
+        existing_hours = {w['hour_start'] for w in self.ip_window_history[ip]}
+        
+        for hour_start, hour_events in sorted(hourly_groups.items()):
+            if hour_start not in existing_hours:
+                window_features = self.calculate_features(hour_events, ip=ip)
+                window_data = {
+                    'hour_start': hour_start,
+                    'features': window_features,
+                    'timestamp': current_time
+                }
+                self.ip_window_history[ip].append(window_data)
+            else:
+                for w in self.ip_window_history[ip]:
+                    if w['hour_start'] == hour_start:
+                        w['features'] = self.calculate_features(hour_events, ip=ip)
+                        w['timestamp'] = current_time
+                        break
+        
+        cutoff_time = current_time - (self.SEQUENCE_LENGTH * self.window_seconds * 2)
+        self.ip_window_history[ip] = [
+            w for w in self.ip_window_history[ip] 
+            if w['timestamp'] >= cutoff_time
+        ]
+        
+        self.ip_window_history[ip].sort(key=lambda x: x['hour_start'])
     
     def predict(self, events: List[SSHEvent], ip: Optional[str] = None) -> float:
         if not events:
             return 0.0
         
         try:
-            # Update IP history if IP is provided
             if ip:
-                self.update_ip_history(ip, events)
+                self._update_failed_days(ip, events)
+                self._update_window_history(ip, events)
             
-            # Filter events to match training window (24h)
-            events = self.filter_events_by_window(events)
-            if not events:
-                return 0.0
-            
-            features = self.calculate_features(events, ip=ip)
-            
-            model_input = self.prepare_model_input(features)
+            if ip and ip in self.ip_window_history:
+                window_history = self.ip_window_history[ip]
+                if len(window_history) >= self.SEQUENCE_LENGTH:
+                    sequence_features = [w['features'] for w in window_history[-self.SEQUENCE_LENGTH:]]
+                    model_input = self.prepare_model_input(sequence_features)
+                else:
+                    return 0.0
+            else:
+                if ip:
+                    self._update_failed_days(ip, events)
+                
+                hourly_groups = self._group_events_by_hour(events)
+                if len(hourly_groups) < self.SEQUENCE_LENGTH:
+                    return 0.0
+                
+                sorted_hours = sorted(hourly_groups.keys())
+                sequence_features = []
+                for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
+                    hour_events = hourly_groups[hour_start]
+                    features = self.calculate_features(hour_events, ip=ip)
+                    sequence_features.append(features)
+                
+                model_input = self.prepare_model_input(sequence_features)
             
             prediction = self.model.predict(model_input, verbose=0)
             probs = prediction[0]
@@ -229,41 +239,24 @@ class AnomalyDetector:
             predicted_class_idx = int(np.argmax(probs))
             predicted_label = self.label_decoder[predicted_class_idx]
             
-            if predicted_label == "SLOW_ATTACK":
-                score = float(probs[predicted_class_idx])
-            elif predicted_label == "FAST_ATTACK":
+            if predicted_label in ["SLOW_ATTACK", "FAST_ATTACK"]:
                 score = float(probs[predicted_class_idx])
             else:
                 score = 0.0
-            
-            self.logger.debug(f"Prediction: {predicted_label}, Probabilities: {probs}")
             
             return min(max(score, 0.0), 1.0)
             
         except Exception as e:
             self.logger.error(f"Prediction error: {e}", exc_info=True)
-            failed_events = [e for e in events if e.event_type in ['failed_password', 'auth_failure', 'invalid_user']]
-            if len(failed_events) >= 5:
-                return 0.9
-            elif len(failed_events) >= 3:
-                return 0.7
-            else:
-                return 0.3
+            return 0.0
     
-    def is_attack(self, events: List[SSHEvent]) -> tuple[bool, float]:
-        score = self.predict(events)
+    def is_attack(self, events: List[SSHEvent], ip: Optional[str] = None) -> tuple[bool, float]:
+        score = self.predict(events, ip=ip)
         return score >= self.threshold, score
     
     def analyze_ip(self, ip: str, events: List[SSHEvent]) -> Dict:
         try:
-            # Update IP history with all events (for n_days_seen calculation)
-            # This maintains historical context across all time, not just current window
-            self.update_ip_history(ip, events)
-            
-            # Filter events to match training window (24h)
-            events = self.filter_events_by_window(events)
             if not events:
-                # Return benign result if no events in window
                 return {
                     'ip': ip,
                     'is_attack': False,
@@ -275,9 +268,51 @@ class AnomalyDetector:
                     'class_probs': {}
                 }
             
-            # Calculate features with IP context for historical n_days_seen
-            features = self.calculate_features(events, ip=ip)
-            model_input = self.prepare_model_input(features)
+            if ip:
+                self._update_failed_days(ip, events)
+                self._update_window_history(ip, events)
+            
+            if ip and ip in self.ip_window_history:
+                window_history = self.ip_window_history[ip]
+                if len(window_history) >= self.SEQUENCE_LENGTH:
+                    sequence_features = [w['features'] for w in window_history[-self.SEQUENCE_LENGTH:]]
+                    model_input = self.prepare_model_input(sequence_features)
+                else:
+                    return {
+                        'ip': ip,
+                        'is_attack': False,
+                        'score': 0.0,
+                        'event_count': len(events),
+                        'event_types': {},
+                        'threshold': self.threshold,
+                        'predicted_class': 'BENIGN',
+                        'class_probs': {}
+                    }
+            else:
+                if ip:
+                    self._update_failed_days(ip, events)
+                
+                hourly_groups = self._group_events_by_hour(events)
+                if len(hourly_groups) < self.SEQUENCE_LENGTH:
+                    return {
+                        'ip': ip,
+                        'is_attack': False,
+                        'score': 0.0,
+                        'event_count': len(events),
+                        'event_types': {},
+                        'threshold': self.threshold,
+                        'predicted_class': 'BENIGN',
+                        'class_probs': {}
+                    }
+                
+                sorted_hours = sorted(hourly_groups.keys())
+                sequence_features = []
+                for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
+                    hour_events = hourly_groups[hour_start]
+                    features = self.calculate_features(hour_events, ip=ip)
+                    sequence_features.append(features)
+                
+                model_input = self.prepare_model_input(sequence_features)
             
             pred = self.model.predict(model_input, verbose=0)
             probs = pred[0]
@@ -294,7 +329,7 @@ class AnomalyDetector:
                 
         except Exception as e:
             self.logger.error(f"Analysis error: {e}", exc_info=True)
-            score = self.predict(events)
+            score = self.predict(events, ip=ip)
             probs = np.array([1.0 - score, score, 0.0], dtype=np.float32)
             predicted_label = "UNKNOWN"
             is_attack = score >= self.threshold
