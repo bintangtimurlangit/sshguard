@@ -7,7 +7,7 @@ Standards-Version: 4.1.3
 
 Package: sshguard
 Architecture: all
-Depends: ${python3:Depends}, ${misc:Depends}, iptables, systemd
+Depends: ${python3:Depends}, ${misc:Depends}, iptables, systemd, python3-numpy, python3-pandas, python3-sklearn, python3-pip
 Description: LSTM-based SSH intrusion detection system
  SSHGuard monitors SSH authentication logs using machine learning
  to detect slow-rate brute force attacks that evade traditional
