@@ -4,7 +4,7 @@ LSTM-based intrusion detection system for SSH authentication monitoring.
 
 ## Overview
 
-SSHGuard monitors SSH authentication logs in real-time using a Bi-LSTM neural network to detect slow-rate brute force attacks that traditional threshold-based systems like fail2ban cannot catch effectively.
+SSHGuard monitors SSH authentication logs in real-time using an LSTM neural network to detect slow-rate brute force attacks that traditional threshold-based systems like fail2ban cannot catch effectively.
 
 ## How It Works
 
@@ -26,7 +26,7 @@ cd sshguard
 2) Install build dependencies
 ```bash
 sudo apt-get update
-sudo apt-get install -y debhelper dh-python python3-all python3-setuptools python3-pip python3-numpy python3-pandas python3-sklearn iptables
+sudo apt-get install -y debhelper dh-python python3-all python3-setuptools python3-pip iptables
 ```
 
 3) Build package
@@ -45,30 +45,22 @@ sudo systemctl start sshguard
 
 ### Method 2 — Install from source
 
-1) Clone
+1) Clone repository
 ```bash
 git clone https://github.com/bintangtimurlangit/sshguard.git
 cd sshguard
 ```
 
-2) System dependencies and Python packages
+2) Install system dependencies
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3-pip python3-numpy python3-pandas python3-sklearn iptables
-sudo pip3 install --break-system-packages tensorflow>=2.10.0 pandas>=1.3.0 scikit-learn>=1.0.0
+sudo apt-get install -y python3-pip iptables
 ```
 
-3) Install and register service
+3) Install package and enable service
 ```bash
-sudo python3 setup.py install
+sudo pip3 install --break-system-packages -e .
 sudo cp systemd/sshguard.service /lib/systemd/system/
-sudo mkdir -p /usr/lib/sshguard/models /etc/sshguard
-sudo cp models/lstm_model.keras /usr/lib/sshguard/models/
-sudo cp models/scaler.pkl /usr/lib/sshguard/models/
-sudo cp models/label_encoder.pkl /usr/lib/sshguard/models/
-sudo cp config/sshguard.conf /etc/sshguard/
-sudo cp scripts/sshguard /usr/bin/
-sudo chmod +x /usr/bin/sshguard
 sudo systemctl daemon-reload
 sudo systemctl enable sshguard
 sudo systemctl start sshguard
@@ -112,14 +104,13 @@ watch -n 2 'sudo sshguard list'
 ## Requirements
 
 - Python 3.8+
-- TensorFlow 2.x
+- TensorFlow 2.10+
+- numpy 1.21+
 - pandas 1.3+
 - scikit-learn 1.0+
-- Runtime packages on Debian/Ubuntu: python3, python3-numpy, python3-pandas, python3-sklearn, python3-pip
 - Root/sudo privileges for iptables management
 - Systemd-based Linux distribution
 
 ## License
 
 MIT License
-

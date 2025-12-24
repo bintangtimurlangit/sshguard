@@ -1,17 +1,13 @@
-"""Setup configuration for SSHGuard package."""
-
 from setuptools import setup, find_packages
 from pathlib import Path
 
-# Read README
 readme_file = Path(__file__).parent / 'README.md'
 long_description = readme_file.read_text() if readme_file.exists() else ''
 
-# Read requirements
 requirements_file = Path(__file__).parent / 'requirements.txt'
 requirements = []
 if requirements_file.exists():
-    requirements = requirements_file.read_text().strip().split('\n')
+    requirements = [line.strip() for line in requirements_file.read_text().strip().split('\n') if line.strip()]
 
 setup(
     name='sshguard',
@@ -20,7 +16,7 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='SSHGuard Team',
-    author_email='',
+    author_email='btimurlangit',
     url='https://github.com/bintangtimurlangit/SSHGuard',
     license='MIT',
     
@@ -42,7 +38,8 @@ setup(
         ('share/sshguard/models', [
             'models/lstm_model.keras',
             'models/scaler.pkl',
-            'models/label_encoder.pkl'
+            'models/label_encoder.pkl',
+            'models/model_config.pkl'
         ]),
         ('etc/sshguard', ['config/sshguard.conf']),
     ],
@@ -63,4 +60,3 @@ setup(
     
     keywords='ssh security intrusion-detection lstm machine-learning',
 )
-
