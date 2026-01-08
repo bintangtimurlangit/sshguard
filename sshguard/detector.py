@@ -269,14 +269,16 @@ class AnomalyDetector:
                 self._update_failed_days(ip, events)
                 self._update_window_history(ip, events)
             
+            # Try to use window history first (for accumulated hourly windows)
+            model_input = None
             if ip and ip in self.ip_window_history:
                 window_history = self.ip_window_history[ip]
                 if len(window_history) >= self.SEQUENCE_LENGTH:
                     sequence_features = [w['features'] for w in window_history[-self.SEQUENCE_LENGTH:]]
                     model_input = self.prepare_model_input(sequence_features)
-                else:
-                    return 0.0
-            else:
+            
+            # If window history doesn't have enough, create windows from current events
+            if model_input is None:
                 if ip:
                     self._update_failed_days(ip, events)
                 
@@ -332,11 +334,21 @@ class AnomalyDetector:
                     if window_size > 0:
                         self.logger.debug(f"Using {window_size}-minute windows for rapid attack detection")
             
+            # If we still don't have model_input, return early
+            if model_input is None:
+                self.logger.debug(f"Could not create model input from {len(events)} events for IP {ip}")
+                return 0.0
+            
+            self.logger.debug(f"Model input shape: {model_input.shape}")
             prediction = self.model.predict(model_input, verbose=0)
             probs = prediction[0]
             
+            self.logger.debug(f"Raw predictions: {probs}, sum: {np.sum(probs):.4f}")
+            
             predicted_class_idx = int(np.argmax(probs))
             predicted_label = self.label_decoder[predicted_class_idx]
+            
+            self.logger.debug(f"Predicted class: {predicted_label} (idx: {predicted_class_idx}, prob: {probs[predicted_class_idx]:.4f})")
             
             if predicted_label in ["SLOW_ATTACK", "FAST_ATTACK"]:
                 score = float(probs[predicted_class_idx])
@@ -371,23 +383,17 @@ class AnomalyDetector:
                 self._update_failed_days(ip, events)
                 self._update_window_history(ip, events)
             
+            # Try to use window history first (for accumulated hourly windows)
+            model_input = None
             if ip and ip in self.ip_window_history:
                 window_history = self.ip_window_history[ip]
                 if len(window_history) >= self.SEQUENCE_LENGTH:
                     sequence_features = [w['features'] for w in window_history[-self.SEQUENCE_LENGTH:]]
                     model_input = self.prepare_model_input(sequence_features)
-                else:
-                    return {
-                        'ip': ip,
-                        'is_attack': False,
-                        'score': 0.0,
-                        'event_count': len(events),
-                        'event_types': {},
-                        'threshold': self.threshold,
-                        'predicted_class': 'BENIGN',
-                        'class_probs': {}
-                    }
-            else:
+                    self.logger.debug(f"Using window history with {len(window_history)} windows")
+            
+            # If window history doesn't have enough, create windows from current events
+            if model_input is None:
                 if ip:
                     self._update_failed_days(ip, events)
                 
@@ -401,6 +407,7 @@ class AnomalyDetector:
                         features = self.calculate_features(hour_events, ip=ip)
                         sequence_features.append(features)
                     model_input = self.prepare_model_input(sequence_features)
+                    self.logger.debug(f"Using {len(hourly_groups)} hourly windows")
                 else:
                     # For rapid attacks, use time-based windows (15-minute windows)
                     time_groups = self._group_events_by_time_window(events, window_minutes=15)
@@ -451,11 +458,30 @@ class AnomalyDetector:
                     if window_size > 0:
                         self.logger.debug(f"Using {window_size}-minute windows for rapid attack detection")
             
+            # If we still don't have model_input, return early
+            if model_input is None:
+                self.logger.warning(f"Could not create model input from {len(events)} events for IP {ip}")
+                return {
+                    'ip': ip,
+                    'is_attack': False,
+                    'score': 0.0,
+                    'event_count': len(events),
+                    'event_types': {},
+                    'threshold': self.threshold,
+                    'predicted_class': 'BENIGN',
+                    'class_probs': {}
+                }
+            
+            self.logger.debug(f"Model input shape: {model_input.shape}")
             pred = self.model.predict(model_input, verbose=0)
             probs = pred[0]
             
+            self.logger.debug(f"Raw predictions: {probs}, sum: {np.sum(probs):.4f}")
+            
             predicted_class_idx = int(np.argmax(probs))
             predicted_label = self.label_decoder[predicted_class_idx]
+            
+            self.logger.debug(f"Predicted class: {predicted_label} (idx: {predicted_class_idx}, prob: {probs[predicted_class_idx]:.4f})")
             
             if predicted_label in ["SLOW_ATTACK", "FAST_ATTACK"]:
                 score = float(probs[predicted_class_idx])
