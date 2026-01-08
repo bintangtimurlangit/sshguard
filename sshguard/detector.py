@@ -147,6 +147,17 @@ class AnomalyDetector:
             hourly_groups[hour_start].append(e)
         return dict(hourly_groups)
     
+    def _group_events_by_time_window(self, events: List[SSHEvent], window_minutes: int = 15) -> Dict[datetime, List[SSHEvent]]:
+        """Group events into time windows (e.g., 15-minute windows) for rapid attack detection."""
+        window_groups = defaultdict(list)
+        for e in events:
+            dt = datetime.fromtimestamp(e.timestamp)
+            # Round down to nearest window_minutes
+            minutes = (dt.minute // window_minutes) * window_minutes
+            window_start = dt.replace(minute=minutes, second=0, microsecond=0)
+            window_groups[window_start].append(e)
+        return dict(window_groups)
+    
     def calculate_features(self, events: List[SSHEvent], ip: Optional[str] = None) -> np.ndarray:
         if not events:
             return np.zeros(self.FEATURE_COUNT, dtype=np.float32)
@@ -269,18 +280,57 @@ class AnomalyDetector:
                 if ip:
                     self._update_failed_days(ip, events)
                 
+                # Try hourly windows first
                 hourly_groups = self._group_events_by_hour(events)
-                if len(hourly_groups) < self.SEQUENCE_LENGTH:
-                    return 0.0
-                
-                sorted_hours = sorted(hourly_groups.keys())
-                sequence_features = []
-                for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
-                    hour_events = hourly_groups[hour_start]
-                    features = self.calculate_features(hour_events, ip=ip)
-                    sequence_features.append(features)
-                
-                model_input = self.prepare_model_input(sequence_features)
+                if len(hourly_groups) >= self.SEQUENCE_LENGTH:
+                    sorted_hours = sorted(hourly_groups.keys())
+                    sequence_features = []
+                    for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
+                        hour_events = hourly_groups[hour_start]
+                        features = self.calculate_features(hour_events, ip=ip)
+                        sequence_features.append(features)
+                    model_input = self.prepare_model_input(sequence_features)
+                else:
+                    # For rapid attacks, use time-based windows (15-minute windows)
+                    # This allows detection even when all events are in the same hour
+                    time_groups = self._group_events_by_time_window(events, window_minutes=15)
+                    window_size = 15
+                    if len(time_groups) < self.SEQUENCE_LENGTH:
+                        # If still not enough, try 10-minute windows
+                        time_groups = self._group_events_by_time_window(events, window_minutes=10)
+                        window_size = 10
+                        if len(time_groups) < self.SEQUENCE_LENGTH:
+                            # If still not enough, try 5-minute windows
+                            time_groups = self._group_events_by_time_window(events, window_minutes=5)
+                            window_size = 5
+                            if len(time_groups) < self.SEQUENCE_LENGTH:
+                                # Last resort: split events into equal chunks to create windows
+                                if len(events) >= self.SEQUENCE_LENGTH * 3:  # Need at least 3 events per window
+                                    self.logger.debug(f"Using event-based windowing for {len(events)} events")
+                                    chunk_size = len(events) // self.SEQUENCE_LENGTH
+                                    time_groups = {}
+                                    for i in range(self.SEQUENCE_LENGTH):
+                                        start_idx = i * chunk_size
+                                        end_idx = start_idx + chunk_size if i < self.SEQUENCE_LENGTH - 1 else len(events)
+                                        chunk_events = events[start_idx:end_idx]
+                                        if chunk_events:
+                                            # Use the timestamp of the first event in the chunk as the window start
+                                            first_ts = datetime.fromtimestamp(chunk_events[0].timestamp)
+                                            time_groups[first_ts] = chunk_events
+                                    window_size = 0  # Event-based
+                                else:
+                                    self.logger.debug(f"Insufficient events ({len(events)}) to create {self.SEQUENCE_LENGTH} windows")
+                                    return 0.0
+                    
+                    sorted_windows = sorted(time_groups.keys())
+                    sequence_features = []
+                    for window_start in sorted_windows[-self.SEQUENCE_LENGTH:]:
+                        window_events = time_groups[window_start]
+                        features = self.calculate_features(window_events, ip=ip)
+                        sequence_features.append(features)
+                    model_input = self.prepare_model_input(sequence_features)
+                    if window_size > 0:
+                        self.logger.debug(f"Using {window_size}-minute windows for rapid attack detection")
             
             prediction = self.model.predict(model_input, verbose=0)
             probs = prediction[0]
@@ -341,27 +391,65 @@ class AnomalyDetector:
                 if ip:
                     self._update_failed_days(ip, events)
                 
+                # Try hourly windows first
                 hourly_groups = self._group_events_by_hour(events)
-                if len(hourly_groups) < self.SEQUENCE_LENGTH:
-                    return {
-                        'ip': ip,
-                        'is_attack': False,
-                        'score': 0.0,
-                        'event_count': len(events),
-                        'event_types': {},
-                        'threshold': self.threshold,
-                        'predicted_class': 'BENIGN',
-                        'class_probs': {}
-                    }
-                
-                sorted_hours = sorted(hourly_groups.keys())
-                sequence_features = []
-                for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
-                    hour_events = hourly_groups[hour_start]
-                    features = self.calculate_features(hour_events, ip=ip)
-                    sequence_features.append(features)
-                
-                model_input = self.prepare_model_input(sequence_features)
+                if len(hourly_groups) >= self.SEQUENCE_LENGTH:
+                    sorted_hours = sorted(hourly_groups.keys())
+                    sequence_features = []
+                    for hour_start in sorted_hours[-self.SEQUENCE_LENGTH:]:
+                        hour_events = hourly_groups[hour_start]
+                        features = self.calculate_features(hour_events, ip=ip)
+                        sequence_features.append(features)
+                    model_input = self.prepare_model_input(sequence_features)
+                else:
+                    # For rapid attacks, use time-based windows (15-minute windows)
+                    time_groups = self._group_events_by_time_window(events, window_minutes=15)
+                    window_size = 15
+                    if len(time_groups) < self.SEQUENCE_LENGTH:
+                        # If still not enough, try 10-minute windows
+                        time_groups = self._group_events_by_time_window(events, window_minutes=10)
+                        window_size = 10
+                        if len(time_groups) < self.SEQUENCE_LENGTH:
+                            # If still not enough, try 5-minute windows
+                            time_groups = self._group_events_by_time_window(events, window_minutes=5)
+                            window_size = 5
+                            if len(time_groups) < self.SEQUENCE_LENGTH:
+                                # Last resort: split events into equal chunks to create windows
+                                if len(events) >= self.SEQUENCE_LENGTH * 3:  # Need at least 3 events per window
+                                    self.logger.debug(f"Using event-based windowing for {len(events)} events")
+                                    chunk_size = len(events) // self.SEQUENCE_LENGTH
+                                    time_groups = {}
+                                    for i in range(self.SEQUENCE_LENGTH):
+                                        start_idx = i * chunk_size
+                                        end_idx = start_idx + chunk_size if i < self.SEQUENCE_LENGTH - 1 else len(events)
+                                        chunk_events = events[start_idx:end_idx]
+                                        if chunk_events:
+                                            # Use the timestamp of the first event in the chunk as the window start
+                                            first_ts = datetime.fromtimestamp(chunk_events[0].timestamp)
+                                            time_groups[first_ts] = chunk_events
+                                    window_size = 0  # Event-based
+                                else:
+                                    self.logger.debug(f"Insufficient events ({len(events)}) to create {self.SEQUENCE_LENGTH} windows")
+                                    return {
+                                        'ip': ip,
+                                        'is_attack': False,
+                                        'score': 0.0,
+                                        'event_count': len(events),
+                                        'event_types': {},
+                                        'threshold': self.threshold,
+                                        'predicted_class': 'BENIGN',
+                                        'class_probs': {}
+                                    }
+                    
+                    sorted_windows = sorted(time_groups.keys())
+                    sequence_features = []
+                    for window_start in sorted_windows[-self.SEQUENCE_LENGTH:]:
+                        window_events = time_groups[window_start]
+                        features = self.calculate_features(window_events, ip=ip)
+                        sequence_features.append(features)
+                    model_input = self.prepare_model_input(sequence_features)
+                    if window_size > 0:
+                        self.logger.debug(f"Using {window_size}-minute windows for rapid attack detection")
             
             pred = self.model.predict(model_input, verbose=0)
             probs = pred[0]
