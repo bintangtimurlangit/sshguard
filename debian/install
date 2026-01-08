@@ -4,3 +4,4 @@ models/scaler.pkl usr/lib/sshguard/models/
 models/label_encoder.pkl usr/lib/sshguard/models/
 models/model_config.pkl usr/lib/sshguard/models/
 systemd/sshguard.service lib/systemd/system/
+scripts/sshguard usr/bin/
