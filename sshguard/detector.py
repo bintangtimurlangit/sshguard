@@ -17,6 +17,48 @@ except ImportError:
 from .log_monitor import SSHEvent
 
 
+# Define focal loss function for model loading
+def focal_loss_fixed(y_true, y_pred, alpha=0.25, gamma=2.0):
+    """
+    Focal loss function for handling class imbalance.
+    This function must be registered before loading models that use it.
+    """
+    import tensorflow as tf
+    
+    # Convert to float32
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
+    # Clip predictions to avoid numerical instability
+    y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
+    
+    # Calculate cross entropy
+    ce = -y_true * tf.math.log(y_pred)
+    
+    # Calculate p_t
+    p_t = y_true * y_pred + (1 - y_true) * (1 - y_pred)
+    
+    # Calculate focal weight
+    focal_weight = tf.pow(1 - p_t, gamma)
+    
+    # Apply alpha weighting
+    alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
+    
+    # Calculate focal loss
+    focal_loss = alpha_t * focal_weight * ce
+    
+    return tf.reduce_mean(focal_loss)
+
+
+# Register the function with Keras if available
+if keras is not None:
+    try:
+        keras.saving.register_keras_serializable(package="sshguard", name="focal_loss_fixed")(focal_loss_fixed)
+    except Exception:
+        # If registration fails, we'll use custom_objects when loading
+        pass
+
+
 class AnomalyDetector:
     FEATURE_COUNT = 9
     SEQUENCE_LENGTH = 3
@@ -44,7 +86,14 @@ class AnomalyDetector:
     
     def _load_model(self):
         try:
-            self.model = keras.models.load_model(self.model_path)
+            # Register custom objects before loading
+            custom_objects = {
+                'focal_loss_fixed': focal_loss_fixed
+            }
+            self.model = keras.models.load_model(
+                self.model_path,
+                custom_objects=custom_objects
+            )
             self.logger.info(f"Loaded LSTM model from {self.model_path}")
         except Exception as e:
             self.logger.error(f"Failed to load model: {e}")
